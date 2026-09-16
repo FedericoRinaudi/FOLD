@@ -174,6 +174,6 @@ SDV version. The pool is about 110 MB and is not versioned here.
 
 If you use this code or the dataset, please cite:
 
-Federico Rinaudi, Mohammad Amir Salari, Abhinav Kumar, Reza Tourani, Alessio
+Federico Rinaudi, Abhinav Kumar, Mohammad Amir Salari, Reza Tourani, Alessio
 Sacco, Guido Marchetto and Flavio Esposito, *Characterizing Privacy Risks in
 Oblivious DNS over HTTPS via Website Fingerprinting*.
