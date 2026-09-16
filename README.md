@@ -168,7 +168,7 @@ adversary rather than a convenient one.
 `make_background.py` writes the pool once, with its parameters recorded in the
 header of the CSV it produces. The defaults are the ones behind the published
 results and the seeds are pinned, so the pool is deterministic given the same
-SDV version. The pool is about 110 MB and is not versioned here.
+SDV version.
 
 ## Citing
 
