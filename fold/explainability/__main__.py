@@ -37,10 +37,13 @@ def parse_args():
     explain.add_argument("--dataset", type=Path, required=True)
     explain.add_argument("--split-file", type=Path,
                          help="JSON dataset_sha256 and train/test trace_id lists; overrides missing split_ids")
+    explain.add_argument("--sample-ids-file", type=Path,
+                         help="JSON sample_ids to explain in file order; does not replace the split")
     explain.add_argument("--target-class", type=int, required=True)
     explain.add_argument("--seed", type=int, default=0, help="sampling seed within the supplied splits")
     explain.add_argument("--background-size", type=int, default=32)
-    explain.add_argument("--max-samples", type=int, default=10)
+    explain.add_argument("--max-samples", type=int,
+                         help="sample count (default: 10), or ordered prefix limit with --sample-ids-file")
     explain.add_argument("--allow-multiclass", action="store_true",
                          help="accept TreeSHAP's internal all-class computation; save only the target")
     explain.add_argument("--out-dir", type=Path, required=True)
@@ -67,7 +70,8 @@ def main():
                                         strict_versions=not args.allow_version_mismatch)
             background, traces, background_ids, sample_ids, selection = select_traces(
                 args.dataset, bundle.metadata, split_file=args.split_file, seed=args.seed,
-                background_size=args.background_size, max_samples=args.max_samples)
+                background_size=args.background_size, max_samples=args.max_samples,
+                sample_ids_file=args.sample_ids_file, target_class=args.target_class)
             metadata = {**bundle.metadata, "selection": selection,
                         "bundle_manifest_sha256": _digest(args.bundle / "manifest.json")}
             print(f"RF TreeSHAP: {len(traces)} test traces, {len(background)} training references, "

@@ -53,13 +53,18 @@ def _replay_defense(traces, index, split, metadata):
 
 
 def select_traces(dataset, metadata, *, split_file=None, seed=0,
-                  background_size=32, max_samples=10):
+                  background_size=32, max_samples=None, sample_ids_file=None,
+                  target_class=None):
     """Sample background from training and explanation cases from test, without fit.
 
     ``seed`` controls sampling within the supplied split, not split construction.
+    Explicit sample IDs retain file order; max_samples optionally limits their prefix.
+    Without a selection file, max_samples defaults to 10 random test traces.
     Returns background traces, test traces, their IDs, and selection metadata.
     """
-    if background_size < 1 or max_samples < 1 or seed < 0:
+    if sample_ids_file is None and max_samples is None:
+        max_samples = 10
+    if background_size < 1 or (max_samples is not None and max_samples < 1) or seed < 0:
         raise ValueError("Sample counts must be positive and seed nonnegative")
     if split_file is None:
         split = metadata.get("split_ids")
@@ -82,7 +87,21 @@ def select_traces(dataset, metadata, *, split_file=None, seed=0,
     val = _ids(split["val"], "val") if "val" in split else []
     if set(train) & set(test) or set(val) & (set(train) | set(test)):
         raise ValueError("Training, validation and test IDs must be disjoint")
-    if background_size > len(train) or max_samples > len(test):
+    sample_ids = None
+    if sample_ids_file is not None:
+        with Path(sample_ids_file).open(encoding="utf-8") as stream:
+            selection = json.load(stream)
+        if not isinstance(selection, dict):
+            raise ValueError("Sample IDs file must contain a JSON object")
+        sample_ids = _ids(selection.get("sample_ids"), "sample_ids")
+        if "target_class" in selection and (type(selection["target_class"]) is not int
+                                            or selection["target_class"] != target_class):
+            raise ValueError("Sample IDs file target_class differs from --target-class")
+        outside = set(sample_ids) - set(test)
+        if outside:
+            raise ValueError(f"Sample IDs do not belong to the recorded test split: {sorted(outside)}")
+        sample_ids = sample_ids[:max_samples]
+    if background_size > len(train) or (sample_ids is None and max_samples > len(test)):
         raise ValueError("Requested sample count exceeds its split size")
     traces, labels, _, ids = load_traces(path, return_ids=True)
     index = {tid: i for i, tid in enumerate(ids)}
@@ -92,7 +111,8 @@ def select_traces(dataset, metadata, *, split_file=None, seed=0,
                 if metadata.get("scenario") == "defense" else None)
     rng = np.random.default_rng(seed)
     background_ids = [train[i] for i in rng.choice(len(train), background_size, replace=False)]
-    sample_ids = [test[i] for i in rng.choice(len(test), max_samples, replace=False)]
+    if sample_ids is None:
+        sample_ids = [test[i] for i in rng.choice(len(test), max_samples, replace=False)]
     info = {"dataset_sha256": digest, "sampling_seed": seed,
             "selection": "uniform_without_replacement_from_explicit_train_test_ids",
             "split_sha256": _digest(split_file) if split_file else None,
@@ -100,6 +120,9 @@ def select_traces(dataset, metadata, *, split_file=None, seed=0,
             "sample_labels": [labels[index[tid]] for tid in sample_ids]}
     info["population"] = "monitored"
     info["defense_replayed"] = defended is not None
+    if sample_ids_file is not None:
+        info["selection"] = "explicit_test_ids_in_file_order"
+        info["sample_ids_file_sha256"] = _digest(sample_ids_file)
 
     def trace(tid):
         return defended[tid] if defended is not None else traces[index[tid]]

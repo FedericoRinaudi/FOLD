@@ -127,6 +127,34 @@ waterfall, bar, beeswarm, dependence, heatmap and semantic-group figures from
 the NPZ. Multiclass TreeSHAP computes all fitted RF classes internally even
 though only the selected target is saved.
 
+To explain an explicit test subset, save a JSON selection such as
+`selections/baseline_rf_instagram.json` (replace the IDs with actual test IDs):
+
+```json
+{"target_class": 8, "class_name": "instagram.com", "sample_ids": ["test-trace-id-1", "test-trace-id-2"]}
+```
+
+```sh
+python -m fold.explainability explain \
+  --bundle artifacts/baseline/exp_001/bundle \
+  --trusted \
+  --dataset data/odoh_traces.csv \
+  --target-class 8 \
+  --sample-ids-file selections/baseline_rf_instagram.json \
+  --background-size 64 \
+  --allow-multiclass \
+  --out-dir explanations/baseline/rf_instagram
+```
+
+`sample_ids` must be nonempty and unique, and every ID must belong to the
+resolved experimental test split. All listed IDs are explained in JSON order;
+an explicit `--max-samples N` limits them to the first N, after validating the
+entire list. Optional `target_class` must match `--target-class`; `class_name`
+is informational and is not used by the model. The selection does not replace
+`split_ids` or relax `--split-file` equality checks, and training-background
+sampling is unchanged. Without `--sample-ids-file`, the existing random test
+selection still defaults to 10 samples.
+
 The SHAP reference is sampled from recorded monitored training IDs and cases
 from monitored test IDs. This remains the RF population in open world;
 synthetic background and `binary_output` explanations are not implemented.
