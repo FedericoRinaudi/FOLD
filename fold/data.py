@@ -58,7 +58,7 @@ def _one_hot(label: int, num_classes: int) -> List[int]:
 # Loading
 # ---------------------------------------------------------------------------
 
-def load_traces(csv_path: Path) -> Tuple[List[List[List[float]]], List[int], List[str]]:
+def load_traces(csv_path: Path, *, return_ids: bool = False):
     """Read the dataset CSV into per-visit traces.
 
     One CSV row is one ODoH resolution and expands to four packets; rows
@@ -67,7 +67,7 @@ def load_traces(csv_path: Path) -> Tuple[List[List[List[float]]], List[int], Lis
     a single client location, which the leave-one-location-out experiment
     relies on.
 
-    Returns ``(traces, labels, locations)`` as parallel lists.
+    Returns ``(traces, labels, locations)``; optionally appends trace IDs.
     """
     groups: dict = {}
     order: List[str] = []
@@ -90,10 +90,11 @@ def load_traces(csv_path: Path) -> Tuple[List[List[List[float]]], List[int], Lis
     traces = [groups[t]["packets"] for t in order]
     labels = [groups[t]["label"] for t in order]
     locations = [groups[t]["location"] for t in order]
-    return traces, labels, locations
+    result = (traces, labels, locations)
+    return (*result, order) if return_ids else result
 
 
-def load_balanced(csv_path: Path) -> Tuple[List[List[List[float]]], List[int], int]:
+def load_balanced(csv_path: Path, *, return_ids: bool = False):
     """Load the dataset and interleave the classes.
 
     Traces are shuffled within each class and then interleaved, so that any
@@ -103,7 +104,8 @@ def load_balanced(csv_path: Path) -> Tuple[List[List[List[float]]], List[int], i
     different trace subsets.  Per-experiment variation comes from the seeded
     permutation in :func:`fold.experiments.load_and_split`, not from here.
     """
-    traces, labels, _ = load_traces(csv_path)
+    loaded = load_traces(csv_path, return_ids=return_ids)
+    traces, labels, _ = loaded[:3]
     num_classes = max(labels) + 1
 
     labels_array = np.array(labels)
@@ -121,7 +123,8 @@ def load_balanced(csv_path: Path) -> Tuple[List[List[List[float]]], List[int], i
 
     traces = [traces[i] for i in balanced_indices]
     labels = [labels[i] for i in balanced_indices]
-    return traces, labels, num_classes
+    result = (traces, labels, num_classes)
+    return (*result, [loaded[3][i] for i in balanced_indices]) if return_ids else result
 
 
 def split_data(*arrays, val_ratio: float = 0.10, test_ratio: float = 0.25):

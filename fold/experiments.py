@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import json
 import pickle
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional
@@ -102,6 +103,7 @@ class TraceSet:
     """Traces and the websites they belong to."""
     traces: List
     labels: List[int]
+    ids: Optional[List[str]] = None
 
     def __len__(self) -> int:
         return len(self.traces)
@@ -115,6 +117,7 @@ class Split:
     test: TraceSet
     num_classes: int
     target_length: int
+    defense_state: Optional[tuple] = None
 
     def encoder(self) -> Encoder:
         """The encoder of this run: fit on the training traces, reused for the
@@ -128,23 +131,28 @@ class Background:
     train: List = field(default_factory=list)
     val: List = field(default_factory=list)
     test: List = field(default_factory=list)
+    ids: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
 # Data, splits and the background pool
 # ---------------------------------------------------------------------------
 
-def load_and_split(cfg: Config) -> Split:
+def load_and_split(cfg: Config, *, capture_ids: bool = False) -> Split:
     """Load the dataset, reshuffle it with this repetition's seed, split it."""
-    traces, labels, num_classes = load_balanced(cfg.dataset)
+    loaded = load_balanced(cfg.dataset, return_ids=capture_ids)
+    traces, labels, num_classes = loaded[:3]
     target_length = max(len(t) for t in traces)
 
     idx = np.random.default_rng(seed=cfg.seed).permutation(len(traces))
     traces = [traces[i] for i in idx]
     labels = [labels[i] for i in idx]
 
-    (tr_t, val_t, te_t), (tr_l, val_l, te_l) = split_data(traces, labels)
-    return Split(TraceSet(tr_t, tr_l), TraceSet(val_t, val_l), TraceSet(te_t, te_l),
+    arrays = [traces, labels]
+    if capture_ids:
+        arrays.append([loaded[3][i] for i in idx])
+    parts = split_data(*arrays)
+    return Split(*(TraceSet(*items) for items in zip(*parts)),
                  num_classes, target_length)
 
 
@@ -159,13 +167,14 @@ def defend(cfg: Config, split: Split) -> Split:
     if not cfg.is_defended:
         return split
     print(f"[exp {cfg.experiment_id}] defense applied to every split: {cfg.defense}")
+    state = random.getstate() if split.train.ids is not None else None
     return Split(
-        *(TraceSet(apply_defense(s.traces, cfg.defense), s.labels)
+        *(TraceSet(apply_defense(s.traces, cfg.defense), s.labels, s.ids)
           for s in (split.train, split.val, split.test)),
-        split.num_classes, split.target_length)
+        split.num_classes, split.target_length, state)
 
 
-def draw_background(cfg: Config, split: Split) -> Background:
+def draw_background(cfg: Config, split: Split, *, capture_ids: bool = False) -> Background:
     """Draw disjoint background slices from the synthetic pool.
 
     The pool is generated once, offline (``make_background.py``), because
@@ -202,19 +211,27 @@ def draw_background(cfg: Config, split: Split) -> Background:
 
     idx = np.random.default_rng(seed=cfg.seed).permutation(len(pool))[:need]
     drawn = [pool[i] for i in idx]
+    ids = None
+    if capture_ids:
+        pool_ids = list(df.groupby("trace_id", sort=True).groups)
+        selected = [str(pool_ids[i]) for i in idx]
+        ids = {"train": selected[:n_train], "val": selected[n_train:n_train + n_val],
+               "test": selected[n_train + n_val:need]}
     print(f"[exp {cfg.experiment_id}] background pool: {len(pool)} traces, "
           f"drew {n_train}/{n_val}/{n_test}")
     return Background(drawn[:n_train], drawn[n_train:n_train + n_val],
-                      drawn[n_train + n_val:need])
+                      drawn[n_train + n_val:need], ids)
 
 
 def save_background(cfg: Config, background: Background) -> None:
     # A plain dict rather than the dataclass: the file then does not depend on
     # where this class happens to live.
     cfg.exp_dir.mkdir(parents=True, exist_ok=True)
+    values = {"train": background.train, "val": background.val, "test": background.test}
+    if background.ids is not None:
+        values["ids"] = background.ids
     with open(cfg.exp_dir / "background.pkl", "wb") as f:
-        pickle.dump({"train": background.train, "val": background.val,
-                     "test": background.test}, f)
+        pickle.dump(values, f)
 
 
 def load_background(cfg: Config) -> Background:
@@ -227,9 +244,9 @@ def load_background(cfg: Config) -> Background:
         return Background(**pickle.load(f))
 
 
-def context(cfg: Config):
+def context(cfg: Config, *, capture_ids: bool = False):
     """The split, the defense and the background: what every runner starts from."""
-    split = defend(cfg, load_and_split(cfg))
+    split = defend(cfg, load_and_split(cfg, capture_ids=capture_ids))
     background = load_background(cfg) if cfg.is_open_world else Background()
     return split, background
 
@@ -268,20 +285,22 @@ def out_of_fold_probs(encoder: Encoder, train: TraceSet, seed: int,
     return oof
 
 
-def run_forest(cfg: Config) -> None:
+def run_forest(cfg: Config, *, return_artifacts: bool = False):
     """Fit the forest, and draw this run's background traces.
 
     This runs first in every experiment: it is what writes ``background.pkl``,
     so that every other model is trained and scored on exactly the same
     background traces.
+
+    With ``return_artifacts``, return (split, background, encoder, final forest).
     """
     configure_gpu()
-    split = defend(cfg, load_and_split(cfg))
+    split = defend(cfg, load_and_split(cfg, capture_ids=return_artifacts))
     encoder = split.encoder()
 
     background = Background()
     if cfg.is_open_world:
-        background = draw_background(cfg, split)
+        background = draw_background(cfg, split, capture_ids=return_artifacts)
         save_background(cfg, background)
         n_test = len(background.test)
         print(f"[exp {cfg.experiment_id}] background is "
@@ -306,6 +325,8 @@ def run_forest(cfg: Config) -> None:
 
     out.save(predictions_path(cfg, "forest"))
     print(f"[exp {cfg.experiment_id}] forest done")
+    if return_artifacts:
+        return split, background, encoder, forest
 
 
 # ---------------------------------------------------------------------------
@@ -368,10 +389,10 @@ def train_sequence_model_open_world(cfg: Config, name: str, encoder: Encoder,
     return model, (val_inputs, val_labels[1])
 
 
-def _run_sequence_model(cfg: Config, name: str) -> None:
+def _run_sequence_model(cfg: Config, name: str, *, return_artifacts: bool = False):
     """Train TR or FOLD in whichever scenario the configuration asks for."""
     configure_gpu()
-    split, background = context(cfg)
+    split, background = context(cfg, capture_ids=return_artifacts)
     encoder = split.encoder()
     forest = Predictions.load(predictions_path(cfg, "forest")) if name == "fold" else None
 
@@ -385,6 +406,8 @@ def _run_sequence_model(cfg: Config, name: str) -> None:
         probs, score = predict_sequence(model, inputs, encoder.num_classes, cfg.batch_size)
         Predictions(test_monitored_probs=probs,
                     test_monitored_score=score).save(predictions_path(cfg, name))
+        if return_artifacts:
+            return split, background, encoder, model
         return
 
     model, (val_inputs, val_binary) = train_sequence_model_open_world(
@@ -414,6 +437,8 @@ def _run_sequence_model(cfg: Config, name: str) -> None:
         val_background_score=val_score[~is_monitored],
     ).save(predictions_path(cfg, name))
     print(f"[exp {cfg.experiment_id}] {name} done")
+    if return_artifacts:
+        return split, background, encoder, model
 
 
 def run_transformer(cfg: Config) -> None:
@@ -421,9 +446,9 @@ def run_transformer(cfg: Config) -> None:
     _run_sequence_model(cfg, "transformer")
 
 
-def run_fold(cfg: Config) -> None:
-    """Train FOLD.  Needs the forest's probabilities, so the forest runs first."""
-    _run_sequence_model(cfg, "fold")
+def run_fold(cfg: Config, *, return_artifacts: bool = False):
+    """Train FOLD after RF; optionally return (split, background, encoder, model)."""
+    return _run_sequence_model(cfg, "fold", return_artifacts=return_artifacts)
 
 
 # ---------------------------------------------------------------------------

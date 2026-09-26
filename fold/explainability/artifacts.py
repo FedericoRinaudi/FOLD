@@ -1,4 +1,4 @@
-"""Saving and loading closed-world FOLD inference bundles.
+"""Saving and loading two-head FOLD inference bundles.
 
 Format version 1 stores the two-head model in four files:
 
@@ -42,6 +42,17 @@ class ArtifactBundle:
     encoder: Encoder
     forest: RandomForest
     model: Any
+    model_config: dict
+    class_names: tuple[str, ...]
+    metadata: dict
+
+
+@dataclass(frozen=True)
+class ForestBundle:
+    """The forest and encoder from a bundle, without its neural model."""
+
+    encoder: Encoder
+    forest: RandomForest
     model_config: dict
     class_names: tuple[str, ...]
     metadata: dict
@@ -127,7 +138,7 @@ def fold_config(encoder: Encoder, **overrides: Any) -> dict:
     bound.apply_defaults()
     config = dict(bound.arguments)
     if config["n1_head"] is not False:
-        raise ValueError("This bundle format supports two-head closed-world FOLD only")
+        raise ValueError("This bundle format supports two-head FOLD only")
     return config
 
 
@@ -181,18 +192,47 @@ def _class_names(names: Sequence[str], count: int) -> tuple[str, ...]:
 
 
 def _metadata(value: Mapping[str, Any]) -> dict:
+    from .configuration import scenario_fields, validate_split
+
     result = dict(value)
-    if result.get("scenario") != "closed-world" or result.get("forest_role") != "final":
-        raise ValueError("metadata must declare scenario='closed-world' and forest_role='final'")
+    if result.get("forest_role") != "final":
+        raise ValueError("metadata must declare forest_role='final'")
+    fields = scenario_fields(result.get("scenario"), result.get("background_ratio"),
+                             result.get("defense"))
+    for key in ("defense_type", "defense_intensity"):
+        if key in result and result[key] != fields[key]:
+            raise ValueError(f"Inconsistent metadata {key}")
+    if "provenance_version" in result:
+        if result["provenance_version"] != 1:
+            raise ValueError("Unsupported experiment provenance version")
+        split = validate_split(result.get("split_ids"))
+        if result.get("dataset_sha256") != split["dataset_sha256"]:
+            raise ValueError("Dataset and split fingerprints differ")
+        for key in ("experiment_id", "seed"):
+            if type(result.get(key)) is not int or result[key] < 0:
+                raise ValueError(f"Invalid metadata {key}")
+        if not isinstance(result.get("seeds"), dict) or not isinstance(result.get("training"), dict):
+            raise ValueError("Experiment provenance requires seeds and training parameters")
+        if fields["scenario"] == "open-world":
+            validate_split(result.get("background_split_ids"))
+        if fields["scenario"] == "defense":
+            replay = result.get("defense_replay", {})
+            if (replay.get("order") != ["train", "val", "test"]
+                    or not replay.get("python_random_state") or not replay.get("source_sha256")):
+                raise ValueError("Defense provenance requires its RNG state and source fingerprint")
+    elif fields["scenario"] != "closed-world":
+        raise ValueError("New scenarios require versioned experiment provenance")
     return result
 
 
-def _versions() -> dict:
+def _versions(neural: bool = True) -> dict:
     result = {"python": platform.python_version()}
-    for name in ("numpy", "scikit-learn", "joblib", "keras"):
+    for name in ("numpy", "scikit-learn", "joblib"):
         result[name] = distributions.version(name)
-    import tensorflow as tf
-    result["tensorflow"] = tf.__version__
+    if neural:
+        import tensorflow as tf
+        result["keras"] = distributions.version("keras")
+        result["tensorflow"] = tf.__version__
     return result
 
 
@@ -212,9 +252,8 @@ def save_bundle(path: str | Path, *, encoder: Encoder, forest: RandomForest,
 
     ``model_config`` must contain the exact parameters used by ``build_fold``;
     :func:`fold_config` resolves its defaults. ``class_names`` follows numeric
-    label order. ``metadata`` must declare ``scenario='closed-world'`` and
-    ``forest_role='final'``; it can also record seeds, split identifiers and the
-    source revision.
+    label order. ``metadata`` declares the scenario and ``forest_role='final'``;
+    versioned experiment provenance records seeds, split IDs and dataset hashes.
 
     The destination must not exist. The manifest is written last, after the
     model files and their hashes.
@@ -253,6 +292,32 @@ def load_bundle(path: str | Path, *, trusted: bool = False,
     ``strict_versions=False`` warns on mismatches instead of rejecting them;
     prediction equivalence then needs checking in the target environment.
     """
+    bundle = _load_forest(path, trusted=trusted, strict_versions=strict_versions,
+                          neural=True)
+    config = _complete_config(bundle.encoder, bundle.model_config)
+    from fold.models.transformer import build_fold
+
+    model = build_fold(**config)
+    model.load_weights(str(Path(path) / "fold.weights.h5"))
+    _validate_model(bundle.encoder, model)
+    _validate_architecture(model, config)
+    return ArtifactBundle(bundle.encoder, bundle.forest, model, config,
+                          bundle.class_names, bundle.metadata)
+
+
+def load_forest_bundle(path: str | Path, *, trusted: bool = False,
+                       strict_versions: bool = True) -> ForestBundle:
+    """Load only RF and Encoder from the same versioned inference bundle.
+
+    Checks hashes of the files read and Python, NumPy, sklearn and joblib versions.
+    TensorFlow and the neural weights are not needed. Only trusted joblib files
+    may be loaded; ``strict_versions=False`` warns on version mismatches.
+    """
+    return _load_forest(path, trusted=trusted, strict_versions=strict_versions,
+                        neural=False)
+
+
+def _load_forest(path, *, trusted, strict_versions, neural) -> ForestBundle:
     if trusted is not True:
         raise ValueError("Only load bundles from a trusted source; pass trusted=True")
     path = Path(path)
@@ -264,10 +329,10 @@ def load_bundle(path: str | Path, *, trusted: bool = False,
     hashes = manifest["sha256"]
     if set(hashes) != set(_FILES):
         raise ValueError("Incomplete artifact file manifest")
-    for name in _FILES:
+    for name in (_FILES if neural else _FILES[:2]):
         if _digest(path / name) != hashes[name]:
             raise ValueError(f"Artifact integrity check failed: {name}")
-    current = _versions()
+    current = _versions(neural=neural)
     recorded = manifest["versions"]
     mismatches = []
     for name, version in current.items():
@@ -287,13 +352,14 @@ def load_bundle(path: str | Path, *, trusted: bool = False,
                           size_edges=values["size_edges"].copy())
     _validate_encoder(encoder)
     names = _class_names(manifest["class_names"], encoder.num_classes)
-    config = _complete_config(encoder, manifest["model_config"])
+    config = manifest["model_config"]
+    dimensions = {"sequence_length": encoder.target_length,
+                  "num_classes": encoder.num_classes,
+                  "size_vocab_size": encoder.vocab_size,
+                  "unigram_agg_dim": encoder.histogram_bins}
+    if (not isinstance(config, dict) or config.get("n1_head") is not False
+            or any(config.get(key) != value for key, value in dimensions.items())):
+        raise ValueError("Bundle model configuration does not match the Encoder")
     forest = joblib.load(path / "forest.joblib")
     _validate_forest(encoder, forest)
-    from fold.models.transformer import build_fold
-
-    model = build_fold(**config)
-    model.load_weights(str(path / "fold.weights.h5"))
-    _validate_model(encoder, model)
-    _validate_architecture(model, config)
-    return ArtifactBundle(encoder, forest, model, config, names, metadata)
+    return ForestBundle(encoder, forest, config, names, metadata)
