@@ -169,11 +169,131 @@ The auxiliary head is not a measure of the Transformer's contribution to the
 final prediction. Temporal feature labels describe the actual calculations on
 recorded packet intervals; last-minus-first is not interpreted as trace duration.
 
+## Exact grouped FOLD SHAP
+
+`explain-fold` explains the final `multi_output` probability, using the existing
+`FoldPredictor` on every reconstructed raw trace:
+
+```text
+hybrid raw trace -> Encoder.forest -> final RF.predict_proba
+                -> Encoder.sequence(with the new RF probabilities)
+                -> trained FOLD -> multi_output[:, target_class]
+```
+
+No Encoder or RF is fitted, and none of FOLD's five dependent inputs is masked
+independently. The artifact bundle and RF TreeSHAP commands are unchanged.
+
+One CSV row in `load_traces` is one ODoH resolution, emitted in role order
+`PROXY_RESPONSE, CLIENT_QUERY, PROXY_QUERY, TARGET_RESPONSE` (0, 1, 2, 3).
+Resolution boundaries are recovered from these cycles. Consecutive repeats
+of a role, produced by the original fragmentation/dummy defenses, stay inside
+the same resolution. Incomplete or out-of-order cycles are rejected.
+
+After resolving all selected test samples, the run uses one effective count:
+`g_run = min(num_groups, min(resolutions(x) for x in selected_samples))`.
+The default and maximum requested count is 8. Training traces with fewer than
+`g_run` resolutions are excluded from the reference pool before sampling.
+Insufficient eligible references raise an error reporting `g_run`, requested
+reference count and eligible count. A reference never reduces `g_run`.
+All samples and selected references are divided into exactly `g_run` nonempty
+blocks, without dropping or duplicating resolutions.
+
+Each trace with n resolutions is divided into g consecutive blocks: `n // g`
+resolutions each, plus one extra in the first `n % g` blocks. These blocks
+cover the whole trace. Block j of x corresponds to block j of each reference's
+own balanced partition, i.e. the same ordinal relative position. This rule is
+deterministic for unequal lengths and preserves complete resolutions and order.
+Hybrid lengths may differ from x; the original Encoder handles padding and
+truncation normally. Time interval values are copied unchanged, without
+rebasing, sorting or changing the original derived temporal calculations.
+
+For a coalition S, `h(x, r, S)` concatenates x's block j when j is in S and
+r's block j otherwise. All absent blocks in one hybrid come from the **same**
+reference r. The finite-reference game is:
+
+```text
+v_x(S) = mean over r in R of P_FOLD(target_class | h(x, r, S))
+phi_j  = sum over S not containing j of
+         [v_x(S union {j}) - v_x(S)] / [g * choose(g - 1, |S|)]
+```
+
+All `2**g` coalition values are evaluated exactly; these are the exact
+SHAP/Shapley values of this defined group game, not a permutation estimate.
+No SHAP library is used. The empty coalition reconstructs each complete
+reference, so `base_value = mean_r P_FOLD(target_class | r)`. The full coalition
+is x. Additivity against the separately predicted original probability is
+checked with `rtol=1e-5, atol=1e-6`; failure raises an error before saving/plotting.
+
+References are sampled uniformly without replacement from eligible recorded
+**training** IDs through `select_traces`, with `--reference-size`
+(default 16) and `--seed` (default 0). These are SHAP references, not open-world
+background traffic. Samples come only from recorded **test** IDs. The existing
+selection-file validation, order, optional `target_class` consistency and
+`--max-samples` prefix rule are reused. No split is changed. Selection by RF
+correctness does not imply that those samples are correctly classified by FOLD.
+For FOLD, random test selection happens first with the given seed; reference
+selection uses a fresh generator with that same seed on the eligible pool in
+recorded training order. RF TreeSHAP sampling is unchanged. The reference
+distribution is therefore conditional on having at least `g_run` resolutions.
+
+```sh
+python -m fold.explainability explain-fold \
+  --bundle artifacts/baseline/exp_001/bundle \
+  --trusted \
+  --dataset data/odoh_traces.csv \
+  --target-class 8 \
+  --sample-ids-file selections/baseline_rf_instagram.json \
+  --num-groups 8 \
+  --reference-size 16 \
+  --seed 0 \
+  --out-dir explanations/baseline/fold_instagram
+```
+
+Use `--skip-plots` to save only `fold_class_008_shap.npz`. Inference is batched
+with `--batch-size` (default 16). Existing output NPZ files are not overwritten.
+The explanation NPZ is separate from the unchanged model bundle: it stores
+numeric arrays and a JSON header, and is loaded with `allow_pickle=False`.
+It contains values of shape `(samples, requested_groups)`, base values, original
+probabilities, sample/reference IDs, target class and name, seed, effective group
+counts, and half-open packet/resolution bounds. Reference packet bounds are
+stored for every sample/reference combination. Inactive columns have zero values
+and -1 bounds. Metadata records the algorithm, selection, bundle/source hashes,
+runtime versions, lengths, mapping rule, batching and numerical tolerance.
+The NPZ JSON metadata also stores `requested_num_groups`, `effective_num_groups`
+and `eligible_reference_count`; the general numeric result format is unchanged.
+
+Four figures can be regenerated without models, TensorFlow or SHAP computation:
+
+```console
+python -m fold.explainability plot-fold --attributions explanations/baseline/fold_instagram/fold_class_008_shap.npz --out-dir explanations/baseline/fold_instagram/figures --sample-index 0
+```
+
+The figures are a local waterfall, mean absolute contribution by ordinal group
+position, a signed sample-by-group heatmap, and signed local contributions along
+resolution order. Padding is masked in the heatmap and excluded from bar means;
+the bar labels report support counts. New runs use a common effective count;
+older NPZ files with differing counts remain readable. Use saved bounds to
+interpret rounding of relative positions. Local bar widths denote group
+length; their heights are group contributions, not per-resolution contributions.
+
+The method measures model responses to these reference-based hybrids, not causal
+effects on real traffic. Cross-group dependencies may make hybrids unlike real
+visits. Contributions depend on the reference population and grouping; they do
+not separately measure RF/Transformer branches, internal inputs, or the auxiliary
+head. `binary_output` is not explained.
+
+Reference probabilities are evaluated once per run and full coalitions once per
+sample. With m references and n samples, the number of trace-level FOLD evaluations
+is `m + n * (1 + m * (2**g_run - 2))`. For g_run=8 and m=16, this is 4,065 per sample
+plus 16 shared reference evaluations: 4,081 for one sample, or 65,056 for 16
+samples. Batching reduces model-call overhead, not the number of evaluated traces.
+
 ## Verification
 
 ```console
 python -m compileall -q fold run_experiment.py
 python -m unittest fold.explainability.test_training -v
+python -m unittest fold.explainability.test_grouped fold.explainability.test_selection -v
 ```
 
 The tests exercise configuration parsing against the campaign's 26 cells,
@@ -182,6 +302,13 @@ traces, defense replay, legacy metadata, trusted loading guards, the static
 save interface and imports without TensorFlow/SHAP/matplotlib. The original
 experiment-module split check is skipped if TensorFlow is unavailable. No
 test fits a model or manufactures model weights.
+
+Grouped-game tests use a mock probability predictor and real-loader structure
+checks, covering atomic groups, deterministic replacement, split membership,
+wrapper calls on hybrids, analytic Shapley values, padding, safe NPZ round-trip
+and additivity errors. Figure smoke tests use saved mock-game results when
+matplotlib is installed. They do not establish real FOLD inference equivalence
+or validate a baseline explanation.
 
 Validation with the first real baseline must cover bundle save/load, prediction
 equivalence across reload and `FoldPredictor`, RF-only loading, real TreeSHAP

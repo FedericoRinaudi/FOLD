@@ -54,7 +54,7 @@ def _replay_defense(traces, index, split, metadata):
 
 def select_traces(dataset, metadata, *, split_file=None, seed=0,
                   background_size=32, max_samples=None, sample_ids_file=None,
-                  target_class=None):
+                  target_class=None, reference_num_groups=None):
     """Sample background from training and explanation cases from test, without fit.
 
     ``seed`` controls sampling within the supplied split, not split construction.
@@ -101,7 +101,8 @@ def select_traces(dataset, metadata, *, split_file=None, seed=0,
         if outside:
             raise ValueError(f"Sample IDs do not belong to the recorded test split: {sorted(outside)}")
         sample_ids = sample_ids[:max_samples]
-    if background_size > len(train) or (sample_ids is None and max_samples > len(test)):
+    if ((reference_num_groups is None and background_size > len(train))
+            or (sample_ids is None and max_samples > len(test))):
         raise ValueError("Requested sample count exceeds its split size")
     traces, labels, _, ids = load_traces(path, return_ids=True)
     index = {tid: i for i, tid in enumerate(ids)}
@@ -109,10 +110,22 @@ def select_traces(dataset, metadata, *, split_file=None, seed=0,
         raise ValueError("Split contains trace IDs absent from the dataset")
     defended = (_replay_defense(traces, index, split, metadata)
                 if metadata.get("scenario") == "defense" else None)
+
+    def trace(tid):
+        return defended[tid] if defended is not None else traces[index[tid]]
+
     rng = np.random.default_rng(seed)
-    background_ids = [train[i] for i in rng.choice(len(train), background_size, replace=False)]
+    if reference_num_groups is None:
+        background_ids = [train[i] for i in rng.choice(len(train), background_size, replace=False)]
     if sample_ids is None:
         sample_ids = [test[i] for i in rng.choice(len(test), max_samples, replace=False)]
+    reference_info = {}
+    if reference_num_groups is not None:
+        from .grouped import select_references
+
+        _, background_ids, reference_info = select_references(
+            [trace(tid) for tid in sample_ids], [trace(tid) for tid in train], train,
+            num_groups=reference_num_groups, reference_size=background_size, seed=seed)
     info = {"dataset_sha256": digest, "sampling_seed": seed,
             "selection": "uniform_without_replacement_from_explicit_train_test_ids",
             "split_sha256": _digest(split_file) if split_file else None,
@@ -120,12 +133,10 @@ def select_traces(dataset, metadata, *, split_file=None, seed=0,
             "sample_labels": [labels[index[tid]] for tid in sample_ids]}
     info["population"] = "monitored"
     info["defense_replayed"] = defended is not None
+    info.update(reference_info)
     if sample_ids_file is not None:
         info["selection"] = "explicit_test_ids_in_file_order"
         info["sample_ids_file_sha256"] = _digest(sample_ids_file)
-
-    def trace(tid):
-        return defended[tid] if defended is not None else traces[index[tid]]
 
     return ([trace(tid) for tid in background_ids],
             [trace(tid) for tid in sample_ids], background_ids, sample_ids, info)

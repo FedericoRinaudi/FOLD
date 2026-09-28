@@ -1,4 +1,4 @@
-"""Compute RF TreeSHAP or redraw figures from saved attributions.
+"""Compute RF TreeSHAP, grouped FOLD SHAP or redraw saved attributions.
 
     python -m fold.explainability explain --help
     python -m fold.explainability plot --help
@@ -54,12 +54,20 @@ def parse_args():
     plot.add_argument("--attributions", type=Path, required=True)
     plot.add_argument("--out-dir", type=Path, required=True)
     _plot_args(plot)
+    from .fold_cli import add_commands
+
+    add_commands(commands)
     return parser, parser.parse_args()
 
 
 def main():
     parser, args = parse_args()
     try:
+        if args.command in ("explain-fold", "plot-fold"):
+            from .fold_cli import run
+
+            run(args)
+            return
         if args.command == "plot":
             result = ForestExplanation.load(args.attributions)
         else:
