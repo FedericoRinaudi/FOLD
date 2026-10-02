@@ -12,12 +12,12 @@ import unittest
 from unittest.mock import patch
 
 from fold.data import apply_defense, load_balanced, load_traces, split_data
-from .artifacts import _digest, _metadata, load_forest_bundle
-from .configuration import experiment_metadata, scenario_fields, scenario_tag, validate_split
-from .data import select_traces
-from .train import class_names, options_from_args, split_record
+from ..core.artifacts import _digest, _metadata, load_forest_bundle
+from ..core.configuration import experiment_metadata, scenario_fields, scenario_tag, validate_split
+from ..core.data import select_traces
+from ..train import class_names, options_from_args, split_record
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 DATASET = ROOT / "data" / "odoh_traces.csv"
 
 
@@ -88,7 +88,7 @@ class ConfigurationTests(unittest.TestCase):
         subprocess.run([sys.executable, "-c", script], cwd=ROOT, check=True)
 
     def test_static_save_interface(self):
-        from .artifacts import save_bundle
+        from ..core.artifacts import save_bundle
         import inspect
 
         tree = ast.parse((ROOT / "fold/explainability/train.py").read_text())

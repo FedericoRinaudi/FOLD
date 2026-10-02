@@ -3,10 +3,10 @@ from importlib import metadata as distributions
 
 import numpy as np
 
-from .artifacts import _class_names, _metadata, _validate_encoder, _validate_forest
+from ..core.artifacts import _class_names, _metadata, _validate_encoder, _validate_forest
 from .features import forest_feature_names
 from .results import ForestExplanation
-from .wrappers import _probabilities, _traces
+from ..end_to_end.predictor import _probabilities, _traces
 
 
 def _target_output(values, expected_value, shape, column, outputs):

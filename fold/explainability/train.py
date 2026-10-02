@@ -10,8 +10,8 @@ import sys
 
 import numpy as np
 
-from .artifacts import _class_names, _digest, _metadata, fold_config, save_bundle
-from .configuration import experiment_metadata, scenario_fields, scenario_tag, validate_split
+from .core.artifacts import _class_names, _digest, _metadata, fold_config, save_bundle
+from .core.configuration import experiment_metadata, scenario_fields, scenario_tag, validate_split
 
 
 def options_from_args(args, *, argv=()):

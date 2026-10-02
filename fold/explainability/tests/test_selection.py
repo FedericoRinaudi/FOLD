@@ -9,15 +9,15 @@ from unittest.mock import patch
 import numpy as np
 
 from fold.data import load_traces
-from .artifacts import _digest
-from .data import select_traces
-from .__main__ import parse_args
+from ..core.artifacts import _digest
+from ..core.data import select_traces
+from ..__main__ import parse_args
 
 
 class SelectionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.dataset = Path(__file__).resolve().parents[2] / "data/odoh_traces.csv"
+        cls.dataset = Path(__file__).resolve().parents[3] / "data/odoh_traces.csv"
         traces, _, _, ids = load_traces(cls.dataset, return_ids=True)
         cls.by_id = dict(zip(ids, traces))
         cls.split = {"dataset_sha256": _digest(cls.dataset),

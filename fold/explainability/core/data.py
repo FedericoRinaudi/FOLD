@@ -121,7 +121,7 @@ def select_traces(dataset, metadata, *, split_file=None, seed=0,
         sample_ids = [test[i] for i in rng.choice(len(test), max_samples, replace=False)]
     reference_info = {}
     if reference_num_groups is not None:
-        from .grouped import select_references
+        from ..end_to_end.explainer import select_references
 
         _, background_ids, reference_info = select_references(
             [trace(tid) for tid in sample_ids], [trace(tid) for tid in train], train,

@@ -12,7 +12,7 @@ import numpy as np
 
 from fold.data import Encoder
 from fold.models.forest import RandomForest
-from .artifacts import _validate_encoder, _validate_forest, _validate_model
+from ..core.artifacts import _validate_encoder, _validate_forest, _validate_model
 
 
 def _traces(value: Any) -> list:

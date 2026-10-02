@@ -292,8 +292,8 @@ samples. Batching reduces model-call overhead, not the number of evaluated trace
 
 ```console
 python -m compileall -q fold run_experiment.py
-python -m unittest fold.explainability.test_training -v
-python -m unittest fold.explainability.test_grouped fold.explainability.test_selection -v
+python -m unittest fold.explainability.tests.test_training -v
+python -m unittest fold.explainability.tests.test_grouped fold.explainability.tests.test_selection -v
 ```
 
 The tests exercise configuration parsing against the campaign's 26 cells,
@@ -315,3 +315,86 @@ equivalence across reload and `FoldPredictor`, RF-only loading, real TreeSHAP
 and numerical additivity, attribution save/load, complete figure rendering,
 and exact correspondence of recorded IDs with the trained run. These checks
 are not established by syntax, configuration or data-only tests.
+
+### Package structure
+
+- `core/`: shared artifacts, configuration, provenance and data selection.
+- `rf/`: Random Forest TreeSHAP, results, figures and CLI commands.
+- `end_to_end/`: FOLD prediction, grouped Shapley, results, figures and CLI commands.
+- `open_world/`: placeholder for future open-world explainability functionality.
+- `tests/`: explainability tests.
+
+`train.py` orchestrates training/export, `__main__.py` dispatches the existing
+CLI commands, and `__init__.py` preserves the top-level public API.
+
+### Open-world explainability
+
+`explain-open-world` explains `binary_output = P(monitored)` of an already
+trained **open-world, two-head FOLD** bundle: 1 means monitored, 0 background.
+The RF and every dependent input are recomputed for each hybrid trace. The
+existing exact grouped Shapley game is reused; `multi_output`, RF TreeSHAP,
+training and artifact formats are unchanged. The earlier limitations on binary
+explanations apply to the RF/multiclass commands; `open_world/` now implements
+this separate binary workflow, without N+1 or auxiliary-head explanations.
+
+Supply the original monitored CSV and the exact background pool CSV used by
+the experiment (`trace_id,pkt_idx,t,size,role`, with optional `#` provenance
+comments). IDs and SHA-256 hashes are verified against `split_ids` and
+`background_split_ids`. Hashes cover file bytes, including LF/CRLF differences.
+The pool is read, never regenerated. pandas is needed for its original CSV
+loading semantics; TensorFlow/Keras are needed for real FOLD inference.
+
+Select either or both test populations with an explicit JSON file:
+
+```json
+{
+  "output": "binary_output",
+  "monitored_sample_ids": ["recorded-monitored-test-id"],
+  "background_sample_ids": ["123"]
+}
+```
+
+Use real IDs from the corresponding bundle splits; omit an unused list or use
+`[]`. At least one sample is required. Row order is monitored first, then
+background, preserving each list's order. Duplicates, wrong-population IDs and
+IDs outside the appropriate test split are rejected. Raw IDs are saved together
+with population arrays; internal `monitored:`/`background:` prefixes prevent
+collisions between source namespaces.
+
+SHAP references are distinct from open-world background traffic: the reference
+set includes **both** monitored and background *training* traces. The default
+total is 16, split equally; odd totals give the extra reference to monitored,
+and totals below 2 are rejected. Eligibility (at least the effective number of
+resolutions) is checked before sampling; insufficient eligible candidates fail
+explicitly. Both population samplers use the given seed independently. The
+effective group count is fixed by the shortest selected sample, never by a
+short reference. These references define a balanced finite game, not the ratio
+of traffic in the training experiment.
+
+```console
+python -m fold.explainability explain-open-world --bundle artifacts/openworld_r0.30/exp_001/bundle --trusted --dataset data/odoh_traces.csv --background-pool data/background_pool.csv --sample-ids-file selections/openworld_binary.json --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 --out-dir explanations/openworld_r0.30/binary
+python -m fold.explainability plot-open-world --attributions explanations/openworld_r0.30/binary/binary_monitored_shap.npz --out-dir explanations/openworld_r0.30/binary/figures --sample-index 0
+```
+
+These are example paths; the bundle, pool and selection must already exist.
+Use `--allow-version-mismatch` only when accepting the existing loader's
+version warnings, and `--skip-plots` to save without matplotlib. `--sample-index`
+is a row in the combined saved order. Plotting saved results needs no model,
+TensorFlow or SHAP computation; binary plotting uses matplotlib, not `shap`.
+
+An optional `--reference-ids-file` uses the same `output` field with
+`monitored_reference_ids` and `background_reference_ids`. Each list retains
+its order and must match the balanced quotas for `--reference-size`; all IDs
+must be eligible members of that bundle's corresponding training split. This
+supports reuse across ratios only where the recorded splits permit it.
+
+The new `binary_monitored_shap.npz` format is
+`fold-open-world-binary-shap`, version 1, loaded with `allow_pickle=False`.
+It stores output/positive-class identity, group values, bases, probabilities,
+raw IDs and population types, group bounds and provenance: scenario/ratio,
+sample/reference lists, eligible counts, seed, requested/effective groups,
+dataset/pool/selection/manifest/source hashes and runtime versions. Additivity
+is checked at construction, save and load (`rtol=1e-5`, `atol=1e-6`). Existing
+NPZ files are not overwritten. Four `binary_monitored_*.png` figures provide a
+local waterfall, mean absolute group bar, population-labelled heatmap and
+contributions along resolution order. No ratio campaign or aggregator is run.

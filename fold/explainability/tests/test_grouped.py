@@ -9,11 +9,11 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from fold.data import load_traces
-from .__main__ import parse_args
-from .fold_results import FoldExplanation
-from .grouped import (FoldGroupExplainer, group_bounds, hybrid_trace,
+from ..__main__ import parse_args
+from ..end_to_end.results import FoldExplanation
+from ..end_to_end.explainer import (FoldGroupExplainer, group_bounds, hybrid_trace,
                       resolution_edges, select_references, shapley_values)
-from .wrappers import FoldPredictor
+from ..end_to_end.predictor import FoldPredictor
 
 
 def trace(units, size=10):
@@ -40,7 +40,7 @@ class GroupedTests(unittest.TestCase):
         return self.explainer().explain(self.samples, sample_ids=["s0", "s1"])
 
     def test_complete_balanced_groups_and_loader_units(self):
-        dataset = Path(__file__).resolve().parents[2] / "data/odoh_traces.csv"
+        dataset = Path(__file__).resolve().parents[3] / "data/odoh_traces.csv"
         actual = load_traces(dataset)[0][0]
         np.testing.assert_array_equal(resolution_edges(actual), np.arange(0, len(actual) + 1, 4))
         for units in (1, 3, 8, 9, 17):
@@ -168,7 +168,7 @@ class GroupedTests(unittest.TestCase):
 
     @unittest.skipUnless(importlib.util.find_spec("matplotlib"), "matplotlib is not installed")
     def test_figures_from_npz(self):
-        from .fold_plots import plot_fold
+        from ..end_to_end.plots import plot_fold
 
         with TemporaryDirectory() as directory:
             path = Path(directory) / "result.npz"

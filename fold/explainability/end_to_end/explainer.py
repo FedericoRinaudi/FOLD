@@ -4,9 +4,9 @@ from math import comb
 import numpy as np
 
 from fold.data import CLIENT_QUERY, PROXY_QUERY, PROXY_RESPONSE, TARGET_RESPONSE
-from .data import _ids
-from .fold_results import FoldExplanation
-from .wrappers import _traces
+from ..core.data import _ids
+from .results import FoldExplanation
+from .predictor import _traces
 
 
 def resolution_edges(trace):

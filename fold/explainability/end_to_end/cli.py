@@ -2,9 +2,9 @@
 from pathlib import Path
 import platform
 
-from .artifacts import _digest, _versions, load_bundle
-from .data import select_traces
-from .fold_results import FoldExplanation
+from ..core.artifacts import _digest, _versions, load_bundle
+from ..core.data import select_traces
+from .results import FoldExplanation
 
 
 def add_commands(commands):
@@ -35,8 +35,8 @@ def run(args):
     if args.command == "plot-fold":
         result = FoldExplanation.load(args.attributions)
     else:
-        from .grouped import FoldGroupExplainer
-        from .wrappers import FoldPredictor
+        from .explainer import FoldGroupExplainer
+        from .predictor import FoldPredictor
 
         path = args.out_dir / f"fold_class_{args.target_class:03d}_shap.npz"
         if path.exists():
@@ -55,10 +55,14 @@ def run(args):
         predictor = FoldPredictor(bundle.encoder, bundle.forest, bundle.model,
                                   batch_size=args.batch_size)
         source_dir = Path(__file__).resolve().parent
+        # Keep the saved provenance keys stable across module moves.
+        source_paths = {"grouped.py": source_dir / "explainer.py",
+                        "wrappers.py": source_dir / "predictor.py",
+                        "fold_results.py": source_dir / "results.py",
+                        "data.py": source_dir.parent / "core" / "data.py"}
         metadata = {**bundle.metadata, "selection": selection,
                     "bundle_manifest_sha256": _digest(args.bundle / "manifest.json"),
-                    "xai_source_sha256": {name: _digest(source_dir / name) for name in
-                                          ("grouped.py", "wrappers.py", "fold_results.py", "data.py")},
+                    "xai_source_sha256": {name: _digest(path) for name, path in source_paths.items()},
                     "inference_batch_size": args.batch_size,
                     "runtime_versions": _versions(),
                     "python": platform.python_version()}
@@ -75,7 +79,7 @@ def run(args):
         print(f"FOLD attributions saved to {path}; effective groups: {result.group_counts.tolist()}")
         if args.skip_plots:
             return
-    from .fold_plots import plot_fold
+    from .plots import plot_fold
 
     paths = plot_fold(result, args.out_dir, sample_index=args.sample_index)
     print(f"Saved {len(paths)} FOLD figures to {args.out_dir}")
