@@ -1,0 +1,37 @@
+{
+  "output": "binary_output",
+  "monitored_sample_ids": [
+    "missouri|first|1|instagram.com",
+    "washington|second|1|instagram.com",
+    "single|1971|8",
+    "wisconsin|first|1|instagram.com",
+    "georgia|third|1|instagram.com",
+    "newyork|second|1|instagram.com",
+    "wisconsin|second|1|instagram.com",
+    "missouri|second|1|instagram.com",
+    "single|889|8",
+    "georgia|first|1|instagram.com",
+    "texas|third|1|instagram.com",
+    "newyork|first|1|instagram.com",
+    "single|985|8",
+    "colorado|first|0|instagram.com",
+    "washington|first|1|instagram.com"
+  ],
+  "background_sample_ids": [
+    "7470",
+    "37893",
+    "32446",
+    "39441",
+    "35742",
+    "25294",
+    "23453",
+    "6160",
+    "29881",
+    "10891",
+    "15758",
+    "7413",
+    "20940",
+    "29739",
+    "2131"
+  ]
+}

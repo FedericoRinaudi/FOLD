@@ -157,7 +157,7 @@ selection still defaults to 10 samples.
 
 The SHAP reference is sampled from recorded monitored training IDs and cases
 from monitored test IDs. This remains the RF population in open world;
-synthetic background and `binary_output` explanations are not implemented.
+RF TreeSHAP remains restricted to monitored multiclass explanations; `binary_output` is handled by the separate open-world workflow below.
 For defended bundles, selection replays `apply_defense` on all saved split IDs
 in order from the captured RNG state, then selects cases. Matching Python
 major/minor and preprocessing source are required. It preserves the caller's
@@ -242,8 +242,8 @@ python -m fold.explainability explain-fold \
   --trusted \
   --dataset data/odoh_traces.csv \
   --target-class 8 \
-  --sample-ids-file selections/baseline_rf_instagram.json \
-  --num-groups 8 \
+  --sample-ids-file selections/baseline_fold_instagram.json \
+  --num-groups 4 \
   --reference-size 16 \
   --seed 0 \
   --out-dir explanations/baseline/fold_instagram
@@ -280,7 +280,7 @@ The method measures model responses to these reference-based hybrids, not causal
 effects on real traffic. Cross-group dependencies may make hybrids unlike real
 visits. Contributions depend on the reference population and grouping; they do
 not separately measure RF/Transformer branches, internal inputs, or the auxiliary
-head. `binary_output` is not explained.
+head. This workflow does not explain `binary_output`; use the separate open-world workflow below.
 
 Reference probabilities are evaluated once per run and full coalitions once per
 sample. With m references and n samples, the number of trace-level FOLD evaluations
@@ -321,7 +321,7 @@ are not established by syntax, configuration or data-only tests.
 - `core/`: shared artifacts, configuration, provenance and data selection.
 - `rf/`: Random Forest TreeSHAP, results, figures and CLI commands.
 - `end_to_end/`: FOLD prediction, grouped Shapley, results, figures and CLI commands.
-- `open_world/`: placeholder for future open-world explainability functionality.
+- `open_world/`: monitored/background selection, binary FOLD prediction, exact grouped Shapley explanations, results, plots and CLI commands.
 - `tests/`: explainability tests.
 
 `train.py` orchestrates training/export, `__main__.py` dispatches the existing
@@ -372,8 +372,8 @@ short reference. These references define a balanced finite game, not the ratio
 of traffic in the training experiment.
 
 ```console
-python -m fold.explainability explain-open-world --bundle artifacts/openworld_r0.30/exp_001/bundle --trusted --dataset data/odoh_traces.csv --background-pool data/background_pool.csv --sample-ids-file selections/openworld_binary.json --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 --out-dir explanations/openworld_r0.30/binary
-python -m fold.explainability plot-open-world --attributions explanations/openworld_r0.30/binary/binary_monitored_shap.npz --out-dir explanations/openworld_r0.30/binary/figures --sample-index 0
+python -m fold.explainability explain-open-world --bundle artifacts/openworld_r0.30/exp_001/bundle --trusted --dataset data/odoh_traces.csv --background-pool data/background_pool.csv --sample-ids-file selections/openworld_r0.30_binary.json --reference-ids-file selections/openworld_common_binary_references.json --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 --out-dir explanations/openworld_r0.30/exp_001/binary
+python -m fold.explainability plot-open-world --attributions explanations/openworld_r0.30/exp_001/binary/binary_monitored_shap.npz --out-dir explanations/openworld_r0.30/exp_001/binary --sample-index 0
 ```
 
 These are example paths; the bundle, pool and selection must already exist.
@@ -397,4 +397,4 @@ dataset/pool/selection/manifest/source hashes and runtime versions. Additivity
 is checked at construction, save and load (`rtol=1e-5`, `atol=1e-6`). Existing
 NPZ files are not overwritten. Four `binary_monitored_*.png` figures provide a
 local waterfall, mean absolute group bar, population-labelled heatmap and
-contributions along resolution order. No ratio campaign or aggregator is run.
+contributions along resolution order. No ratio campaign is scheduled automatically; completed runs can be summarized with `analysis/make_openworld_summary.py`.

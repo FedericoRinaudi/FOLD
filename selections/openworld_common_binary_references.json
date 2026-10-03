@@ -1,0 +1,23 @@
+{
+  "output": "binary_output",
+  "monitored_reference_ids": [
+    "wisconsin|first|1|espn.com",
+    "single|895|15",
+    "texas|third|2|att.com",
+    "viriginia|second|1|shein.com",
+    "newyork|first|2|fedex.com",
+    "single|988|11",
+    "texas|third|1|twitter.com",
+    "south-carolina|second|1|pornhub.com"
+  ],
+  "background_reference_ids": [
+    "29174",
+    "5234",
+    "18809",
+    "19703",
+    "25895",
+    "19768",
+    "19260",
+    "11924"
+  ]
+}
