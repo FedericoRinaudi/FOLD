@@ -1,400 +1,352 @@
-# FOLD inference artifacts and RF explanations
+# FOLD explainability
 
-Run commands from the repository root with Python 3.12. Training uses the
-dependencies in `requirements.txt`, plus `joblib` and the Keras/HDF5 support
-provided by TensorFlow. RF-only loading requires NumPy, scikit-learn and joblib;
-TreeSHAP additionally requires `shap`, and figures require `matplotlib`.
-The bundle records runtime versions and loaders require matching versions by
-default. SHAP versions are recorded with the attributions. No environment or
-dependencies are installed by these commands.
+Train RF and FOLD inference bundles, explain their predictions, and reproduce
+the 26-configuration TSR campaign. Run all commands from the repository root;
+the shell examples use Bash (including the loops).
 
-## One training configuration
+## What is here
 
-The runner reuses `run_experiment.py` arguments and the original `Config`,
-`run_forest` and `run_fold`. Use `--model fold`: one invocation fits the final
-RF, its five out-of-fold RFs, and FOLD for one experiment ID. It does not train
-the other model families. `--out-dir` is the artifact root here; the runner
-appends the scenario name and the original `exp_NNN` directory.
+| Path | Purpose |
+| --- | --- |
+| `fold/explainability/` | Bundle export, RF TreeSHAP, grouped FOLD Shapley and plotting |
+| `analysis/` | Campaign summaries and aggregate CSV/PNG outputs |
+| `selections/` | Recorded explanation samples and common binary references |
+| `data/odoh_traces.csv` | Included monitored traffic dataset |
+| `make_background.py` | Generate synthetic background traffic |
+| `run_experiment.py` | Original experiment runner, including evaluation |
 
-```console
+## Getting started
+
+Use Python 3.12. `requirements.txt` pins TensorFlow, scikit-learn, NumPy,
+pandas, SciPy, matplotlib and SDV. SHAP and joblib are additional explainability
+dependencies; their versions are not pinned in that file.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install shap joblib
+```
+
+CPU execution is supported; a GPU is optional and useful for training.
+
+The included `data/target_websites.csv` lists the 100 monitored websites.
+Training obtains the label-to-site mapping from `data/odoh_traces.csv` itself.
+Its temporal fields are **intervals between packets**, not absolute timestamps.
+
+## The TSR campaign
+
+| Scenario | Configurations |
+| --- | --- |
+| Baseline | 1: no background, no defense |
+| Open-world | Background 30/40/50/60/70% |
+| Padding | 10/30/50/70/100%, no background |
+| Dummy | 10/30/50/70/100%, no background |
+| Fragmentation | 10/30/50/70/100%, no background |
+| Combined | All three defenses at 10/30/50/70/100%, no background |
+
+There are **26 configurations**, each with experiment ID 1 and one repetition.
+Intensity sets padding probability per processed record/fragment, dummy insertion probability after an original record, and recursive fragmentation probability within implementation constraints; combined enables all three mechanisms at the same intensity.
+Background and defense are never combined. The original `run_campaign.sh`
+runs a larger campaign and does not replace the procedure below.
+
+The experiment ID and configuration determine the splits and seeds used by the code.
+
+## Preparing the background pool
+
+Generate the pool once, before open-world training, and reuse that exact file:
+
+```bash
+python make_background.py \
+  --dataset data/odoh_traces.csv --out data/background_pool.csv \
+  --size 40000 --n-fit 1800 --seed 10 \
+  --vocab-ratio 0.95 --proxy-vocab-ratio 0.35 --seq-repeat 0.55
+```
+
+The command uses the code defaults and requires SDV from `requirements.txt`.
+The pool is generated locally and is not versioned. Reuse the same pool
+throughout a campaign, with bundles and selections that correspond to it.
+
+## Running one experiment
+
+The export runner trains the final RF, its five OOF forests, and FOLD, then
+saves the inference bundle. Evaluation is a separate command.
+**Export appends the scenario to `--out-dir`; evaluation does not.** Both
+append `exp_001`. Keep the dataset, ID and scenario flags identical.
+
+```bash
+# Baseline
 python -m fold.explainability.train --model fold --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts
+python run_experiment.py --model evaluate --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts/baseline
+
+# Open-world, 30% background
 python -m fold.explainability.train --model fold --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts --open-world --background-ratio 0.30 --background-pool data/background_pool.csv
+python run_experiment.py --model evaluate --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts/openworld_r0.30 --open-world --background-ratio 0.30 --background-pool data/background_pool.csv
+
+# Padding, 30%
 python -m fold.explainability.train --model fold --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts --defense-padding 0.30
+python run_experiment.py --model evaluate --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts/defense_padding_p0.30 --defense-padding 0.30
+
+# Combined, 50% for each mechanism
+python -m fold.explainability.train --model fold --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts --defense-padding 0.50 --defense-dummy 0.50 --defense-fragmentation 0.50
+python run_experiment.py --model evaluate --experiment-id 1 --dataset data/odoh_traces.csv --out-dir artifacts/defense_combined_p0.50 --defense-padding 0.50 --defense-dummy 0.50 --defense-fragmentation 0.50
 ```
 
-These create `baseline/exp_001`, `openworld_r0.30/exp_001` and
-`defense_padding_p0.30/exp_001` under `artifacts`. An existing experiment
-directory is rejected before training. A failed run can leave partial outputs;
-use a new output root for a retry. The inherited CLI help also lists options
-for other original runners; N+1 heads, other models, location and sweep options
-are not supported here.
+Choose these individual examples or the full campaign below. Training creates
+a new directory for each configuration.
 
-The existing campaign's `RATIOS` and `PROBS` in `run_campaign.sh` define the
-requested grid; no second scheduling or enumeration implementation is used:
+## Running the full TSR campaign
 
-| Scenario | Original options | Values |
-| --- | --- | --- |
-| Baseline | No defense or open-world flags | One run |
-| Background | `--open-world --background-ratio R` | .30, .40, .50, .60, .70 |
-| Padding | `--defense-padding P` | .10, .30, .50, .70, 1.00 |
-| Dummy packets | `--defense-dummy P` | Same intensities |
-| Fragmentation | `--defense-fragmentation P` | Same intensities |
-| Combined | All three defense flags at equal P | Same intensities |
+After preparing the pool, this Bash block trains and evaluates all 26 cells,
+once each, and stops on the first error. It requires no preceding single-run
+example.
 
-Use experiment ID 1 once per cell for the 26 configurations. Background and
-defense cannot be combined. The original campaign also includes other models,
-ablations and repetitions; running that script does not enable bundle export.
-The background CSV must already exist, produced through `make_background.py`;
-its bytes, including its provenance header, are bound by SHA-256. It is not
-generated by the training runner.
+```bash
+(
+  set -euo pipefail
+  run_cell() {
+    local scenario="$1"
+    shift
+    python -m fold.explainability.train --model fold --experiment-id 1 \
+      --dataset data/odoh_traces.csv --out-dir artifacts "$@"
+    python run_experiment.py --model evaluate --experiment-id 1 \
+      --dataset data/odoh_traces.csv --out-dir "artifacts/$scenario" "$@"
+  }
 
-`--epochs` (500) and `--batch-size` (16) retain the original defaults. Early
-stopping monitors validation loss with patience 20 and restores the best
-weights. There is no separate seed override: `Config.seed` is
-`17 * experiment_id + 42`. RF seeds remain the experiment ID, with offsets
-0 through 4 for OOF estimators; balancing uses seed 0. Each original runner is
-reseeded as in its standalone invocation. Seeds do not guarantee bitwise
-identical neural training across different hardware and runtime versions.
+  run_cell baseline
+  for r in 0.30 0.40 0.50 0.60 0.70; do
+    run_cell "openworld_r$r" --open-world --background-ratio "$r" \
+      --background-pool data/background_pool.csv
+  done
+  for family in padding dummy fragmentation combined; do
+    for p in 0.10 0.30 0.50 0.70 1.00; do
+      if [ "$family" = combined ]; then
+        run_cell "defense_${family}_p$p" \
+          --defense-padding "$p" --defense-dummy "$p" --defense-fragmentation "$p"
+      else
+        run_cell "defense_${family}_p$p" "--defense-$family" "$p"
+      fi
+    done
+  done
+)
+```
 
-## Training integration and provenance
+## What a run leaves behind
 
-`load_balanced` carries CSV IDs through its existing balancing indices.
-`load_and_split` carries those same IDs through its permutation and 65/10/25
-split; it does not reconstruct IDs from a separate split. Optional return
-values expose the original objects without changing the default runner API.
-
-`Split.encoder()` fits packet-size quantiles on monitored training traces.
-The original target length remains the maximum of the loaded monitored data.
-Defenses are applied in train, validation, test order before fitting the
-Encoder. Background sampling uses the original shuffled pool and disjoint
-slices. Its IDs are captured from the same selected indices, in a separate
-namespace bound to the pool hash. Neural open-world inputs concatenate
-monitored traces followed by background; the final RF is fitted only on
-monitored training traces.
-
-`run_forest(..., return_artifacts=True)` exposes the final full-training RF,
-not any estimator created inside `out_of_fold_probs`. After the original
-training and prediction code, `run_fold(..., return_artifacts=True)` exposes
-the selected model weights. The orchestrator checks equality of the RF/FOLD
-split IDs, traces, labels, defense state, background and Encoder before calling
-`save_bundle`. Dataset, pool and source hashes must still match the values
-captured before training. The architecture is resolved by `fold_config` from
-the same builder defaults and checked against the trained model.
-
-Each experiment directory contains:
+After training and evaluation:
 
 ```text
-forest.npz             original OOF, validation/test and background RF probabilities
-fold.npz               original FOLD test outputs (also validation in open world)
-background.pkl         open world only; original sampled traces plus their IDs
-bundle/
-    manifest.json
-    encoder.npz
-    forest.joblib
-    fold.weights.h5
+artifacts/<scenario>/exp_001/
+    forest.npz          RF predictions
+    fold.npz            FOLD predictions
+    y_test.npy          evaluation labels
+    result.json         evaluation metrics
+    background.pkl      sampled background and IDs (open-world only)
+    bundle/
+        encoder.npz
+        forest.joblib
+        fold.weights.h5
+        manifest.json
 ```
 
-The four-file bundle remains `fold-explainability`, format version 1. The
-manifest retains architecture, ordered class names, dependency versions and
-artifact SHA-256 hashes. Additive `metadata.provenance_version=1` records:
+Training generates predictions and the inference bundle; evaluation writes
+`result.json` and `y_test.npy`. The bundle serves inference and XAI. These
+model artifacts are not versioned; baseline explanation NPZ files and
+aggregate CSV results are included.
 
-- `scenario`, `background_ratio`, `defense`, `defense_type`, `defense_intensity`;
-- `experiment_id`, `seed`, all effective `seeds`, epochs and batch size;
-- `forest_role="final"`, `dataset_sha256`, `source_sha256`;
-- `split_ids`: dataset hash and ordered `train`, `val`, `test` CSV IDs;
-- for open world, `background_split_ids`, concatenation order and realized
-  ratios after integer rounding;
-- for defense, `defense_replay`: actual Python RNG state before transformation,
-  Python version, split traversal order and original preprocessing source hash.
+## Explainability workflows
 
-Splits are embedded once in the manifest, with no duplicate split file. Class
-names come from the dataset's existing `categorical_label` to `site` mapping.
-Legacy closed-world metadata remains readable. All Encoder, class, dimension,
-architecture, version and integrity checks remain active. Only load trusted
-bundles: joblib can execute code; hashes establish integrity, not authenticity.
-The original background pickle is likewise intended only for trusted local runs.
+Run these after exporting the corresponding bundles. Explanation commands
+write NPZ files and figures; `--skip-plots` saves only the NPZ. Use a new
+output directory when regenerating explanations.
 
-## RF TreeSHAP and figures
+### Random Forest
 
-```console
-python -m fold.explainability explain --bundle artifacts/baseline/exp_001/bundle --trusted --dataset data/odoh_traces.csv --target-class 0 --background-size 32 --max-samples 10 --seed 0 --allow-multiclass --out-dir explanations/baseline
-python -m fold.explainability plot --attributions explanations/baseline/rf_class_000_shap.npz --out-dir explanations/baseline/figures
-```
+TreeSHAP explains the final RF's aggregate features for one monitored class.
 
-`explain` writes `rf_class_000_shap.npz` and PNG figures to its output directory;
-`--skip-plots` writes only the attributions. `plot` regenerates the existing
-waterfall, bar, beeswarm, dependence, heatmap and semantic-group figures from
-the NPZ. Multiclass TreeSHAP computes all fitted RF classes internally even
-though only the selected target is saved.
-
-To explain an explicit test subset, save a JSON selection such as
-`selections/baseline_rf_instagram.json` (replace the IDs with actual test IDs):
-
-```json
-{"target_class": 8, "class_name": "instagram.com", "sample_ids": ["test-trace-id-1", "test-trace-id-2"]}
-```
-
-```sh
+```bash
 python -m fold.explainability explain \
-  --bundle artifacts/baseline/exp_001/bundle \
-  --trusted \
-  --dataset data/odoh_traces.csv \
-  --target-class 8 \
-  --sample-ids-file selections/baseline_rf_instagram.json \
-  --background-size 64 \
-  --allow-multiclass \
-  --out-dir explanations/baseline/rf_instagram
+  --bundle artifacts/baseline/exp_001/bundle --trusted \
+  --dataset data/odoh_traces.csv --target-class 0 \
+  --background-size 32 --max-samples 10 --seed 0 --allow-multiclass \
+  --out-dir explanations/reproduction/baseline/rf
+python -m fold.explainability plot \
+  --attributions explanations/reproduction/baseline/rf/rf_class_000_shap.npz \
+  --out-dir explanations/reproduction/baseline/rf/figures
 ```
 
-`sample_ids` must be nonempty and unique, and every ID must belong to the
-resolved experimental test split. All listed IDs are explained in JSON order;
-an explicit `--max-samples N` limits them to the first N, after validating the
-entire list. Optional `target_class` must match `--target-class`; `class_name`
-is informational and is not used by the model. The selection does not replace
-`split_ids` or relax `--split-file` equality checks, and training-background
-sampling is unchanged. Without `--sample-ids-file`, the existing random test
-selection still defaults to 10 samples.
+### FOLD multiclass
 
-The SHAP reference is sampled from recorded monitored training IDs and cases
-from monitored test IDs. This remains the RF population in open world;
-RF TreeSHAP remains restricted to monitored multiclass explanations; `binary_output` is handled by the separate open-world workflow below.
-For defended bundles, selection replays `apply_defense` on all saved split IDs
-in order from the captured RNG state, then selects cases. Matching Python
-major/minor and preprocessing source are required. It preserves the caller's
-RNG state and does not create a new split.
+Grouped exact Shapley explains `multi_output` by replacing trace groups and
+recomputing the full encoder/RF/FOLD pipeline. The baseline uses target 8
+(`instagram.com`), 15 selected traces, 4 groups, 16 references and seed 0.
 
-RF attributions explain only the RF component. `FoldPredictor` still recomputes
-`Encoder.forest -> final RF -> Encoder.sequence -> FOLD` for every input.
-The auxiliary head is not a measure of the Transformer's contribution to the
-final prediction. Temporal feature labels describe the actual calculations on
-recorded packet intervals; last-minus-first is not interpreted as trace duration.
+View the baseline result already included in the clone, without a bundle:
 
-## Exact grouped FOLD SHAP
-
-`explain-fold` explains the final `multi_output` probability, using the existing
-`FoldPredictor` on every reconstructed raw trace:
-
-```text
-hybrid raw trace -> Encoder.forest -> final RF.predict_proba
-                -> Encoder.sequence(with the new RF probabilities)
-                -> trained FOLD -> multi_output[:, target_class]
+```bash
+python -m fold.explainability plot-fold \
+  --attributions explanations/baseline/fold_instagram/fold_class_008_shap.npz \
+  --out-dir explanations/reproduction/included_baseline_figures --sample-index 0
 ```
 
-No Encoder or RF is fitted, and none of FOLD's five dependent inputs is masked
-independently. The artifact bundle and RF TreeSHAP commands are unchanged.
+Generate a new explanation in a different directory:
 
-One CSV row in `load_traces` is one ODoH resolution, emitted in role order
-`PROXY_RESPONSE, CLIENT_QUERY, PROXY_QUERY, TARGET_RESPONSE` (0, 1, 2, 3).
-Resolution boundaries are recovered from these cycles. Consecutive repeats
-of a role, produced by the original fragmentation/dummy defenses, stay inside
-the same resolution. Incomplete or out-of-order cycles are rejected.
-
-After resolving all selected test samples, the run uses one effective count:
-`g_run = min(num_groups, min(resolutions(x) for x in selected_samples))`.
-The default and maximum requested count is 8. Training traces with fewer than
-`g_run` resolutions are excluded from the reference pool before sampling.
-Insufficient eligible references raise an error reporting `g_run`, requested
-reference count and eligible count. A reference never reduces `g_run`.
-All samples and selected references are divided into exactly `g_run` nonempty
-blocks, without dropping or duplicating resolutions.
-
-Each trace with n resolutions is divided into g consecutive blocks: `n // g`
-resolutions each, plus one extra in the first `n % g` blocks. These blocks
-cover the whole trace. Block j of x corresponds to block j of each reference's
-own balanced partition, i.e. the same ordinal relative position. This rule is
-deterministic for unequal lengths and preserves complete resolutions and order.
-Hybrid lengths may differ from x; the original Encoder handles padding and
-truncation normally. Time interval values are copied unchanged, without
-rebasing, sorting or changing the original derived temporal calculations.
-
-For a coalition S, `h(x, r, S)` concatenates x's block j when j is in S and
-r's block j otherwise. All absent blocks in one hybrid come from the **same**
-reference r. The finite-reference game is:
-
-```text
-v_x(S) = mean over r in R of P_FOLD(target_class | h(x, r, S))
-phi_j  = sum over S not containing j of
-         [v_x(S union {j}) - v_x(S)] / [g * choose(g - 1, |S|)]
-```
-
-All `2**g` coalition values are evaluated exactly; these are the exact
-SHAP/Shapley values of this defined group game, not a permutation estimate.
-No SHAP library is used. The empty coalition reconstructs each complete
-reference, so `base_value = mean_r P_FOLD(target_class | r)`. The full coalition
-is x. Additivity against the separately predicted original probability is
-checked with `rtol=1e-5, atol=1e-6`; failure raises an error before saving/plotting.
-
-References are sampled uniformly without replacement from eligible recorded
-**training** IDs through `select_traces`, with `--reference-size`
-(default 16) and `--seed` (default 0). These are SHAP references, not open-world
-background traffic. Samples come only from recorded **test** IDs. The existing
-selection-file validation, order, optional `target_class` consistency and
-`--max-samples` prefix rule are reused. No split is changed. Selection by RF
-correctness does not imply that those samples are correctly classified by FOLD.
-For FOLD, random test selection happens first with the given seed; reference
-selection uses a fresh generator with that same seed on the eligible pool in
-recorded training order. RF TreeSHAP sampling is unchanged. The reference
-distribution is therefore conditional on having at least `g_run` resolutions.
-
-```sh
+```bash
 python -m fold.explainability explain-fold \
-  --bundle artifacts/baseline/exp_001/bundle \
-  --trusted \
-  --dataset data/odoh_traces.csv \
-  --target-class 8 \
+  --bundle artifacts/baseline/exp_001/bundle --trusted \
+  --dataset data/odoh_traces.csv --target-class 8 \
   --sample-ids-file selections/baseline_fold_instagram.json \
-  --num-groups 4 \
-  --reference-size 16 \
-  --seed 0 \
-  --out-dir explanations/baseline/fold_instagram
+  --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 \
+  --out-dir explanations/reproduction/baseline/fold_instagram
+python -m fold.explainability plot-fold \
+  --attributions explanations/reproduction/baseline/fold_instagram/fold_class_008_shap.npz \
+  --out-dir explanations/reproduction/baseline/fold_instagram/figures --sample-index 0
 ```
 
-Use `--skip-plots` to save only `fold_class_008_shap.npz`. Inference is batched
-with `--batch-size` (default 16). Existing output NPZ files are not overwritten.
-The explanation NPZ is separate from the unchanged model bundle: it stores
-numeric arrays and a JSON header, and is loaded with `allow_pickle=False`.
-It contains values of shape `(samples, requested_groups)`, base values, original
-probabilities, sample/reference IDs, target class and name, seed, effective group
-counts, and half-open packet/resolution bounds. Reference packet bounds are
-stored for every sample/reference combination. Inactive columns have zero values
-and -1 bounds. Metadata records the algorithm, selection, bundle/source hashes,
-runtime versions, lengths, mapping rule, batching and numerical tolerance.
-The NPZ JSON metadata also stores `requested_num_groups`, `effective_num_groups`
-and `eligible_reference_count`; the general numeric result format is unchanged.
+### Defense FOLD
 
-Four figures can be regenerated without models, TensorFlow or SHAP computation:
+Use the same baseline cohort and parameters for all 20 defended bundles.
 
-```console
-python -m fold.explainability plot-fold --attributions explanations/baseline/fold_instagram/fold_class_008_shap.npz --out-dir explanations/baseline/fold_instagram/figures --sample-index 0
+```bash
+(
+  set -euo pipefail
+  for family in padding dummy fragmentation combined; do
+    for p in 0.10 0.30 0.50 0.70 1.00; do
+      scenario="defense_${family}_p$p"
+      python -m fold.explainability explain-fold \
+        --bundle "artifacts/$scenario/exp_001/bundle" --trusted \
+        --dataset data/odoh_traces.csv --target-class 8 \
+        --sample-ids-file selections/baseline_fold_instagram.json \
+        --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 \
+        --out-dir "explanations/$scenario/exp_001/fold_instagram"
+    done
+  done
+)
 ```
 
-The figures are a local waterfall, mean absolute contribution by ordinal group
-position, a signed sample-by-group heatmap, and signed local contributions along
-resolution order. Padding is masked in the heatmap and excluded from bar means;
-the bar labels report support counts. New runs use a common effective count;
-older NPZ files with differing counts remain readable. Use saved bounds to
-interpret rounding of relative positions. Local bar widths denote group
-length; their heights are group contributions, not per-resolution contributions.
+Each output contains `fold_class_008_shap.npz` and four figures. Use
+`plot-fold` with the corresponding NPZ to redraw them.
 
-The method measures model responses to these reference-based hybrids, not causal
-effects on real traffic. Cross-group dependencies may make hybrids unlike real
-visits. Contributions depend on the reference population and grouping; they do
-not separately measure RF/Transformer branches, internal inputs, or the auxiliary
-head. This workflow does not explain `binary_output`; use the separate open-world workflow below.
+### Open-world multiclass and binary
 
-Reference probabilities are evaluated once per run and full coalitions once per
-sample. With m references and n samples, the number of trace-level FOLD evaluations
-is `m + n * (1 + m * (2**g_run - 2))`. For g_run=8 and m=16, this is 4,065 per sample
-plus 16 shared reference evaluations: 4,081 for one sample, or 65,056 for 16
-samples. Batching reduces model-call overhead, not the number of evaluated traces.
+The multiclass workflow explains the Instagram probability on the monitored
+cohort; the binary workflow explains `binary_output = P(monitored)` on both
+populations, with 8 monitored and 8 background references shared across ratios.
 
-## Verification
-
-```console
-python -m compileall -q fold run_experiment.py
-python -m unittest fold.explainability.tests.test_training -v
-python -m unittest fold.explainability.tests.test_grouped fold.explainability.tests.test_selection -v
+```bash
+(
+  set -euo pipefail
+  for r in 0.30 0.40 0.50 0.60 0.70; do
+    python -m fold.explainability explain-fold \
+      --bundle "artifacts/openworld_r$r/exp_001/bundle" --trusted \
+      --dataset data/odoh_traces.csv --target-class 8 \
+      --sample-ids-file selections/baseline_fold_instagram.json \
+      --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 \
+      --out-dir "explanations/openworld_r$r/exp_001/fold_instagram"
+    python -m fold.explainability explain-open-world \
+      --bundle "artifacts/openworld_r$r/exp_001/bundle" --trusted \
+      --dataset data/odoh_traces.csv --background-pool data/background_pool.csv \
+      --sample-ids-file "selections/openworld_r${r}_binary.json" \
+      --reference-ids-file selections/openworld_common_binary_references.json \
+      --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 \
+      --out-dir "explanations/openworld_r$r/exp_001/binary"
+  done
+)
 ```
 
-The tests exercise configuration parsing against the campaign's 26 cells,
-invalid combinations, deterministic metadata, split selection on real CSV
-traces, defense replay, legacy metadata, trusted loading guards, the static
-save interface and imports without TensorFlow/SHAP/matplotlib. The original
-experiment-module split check is skipped if TensorFlow is unavailable. No
-test fits a model or manufactures model weights.
+The multiclass NPZ is `fold_instagram/fold_class_008_shap.npz`; the binary NPZ
+is `binary/binary_monitored_shap.npz` and contains both populations. Each
+workflow writes four figures. Redraw binary figures, for example, with:
 
-Grouped-game tests use a mock probability predictor and real-loader structure
-checks, covering atomic groups, deterministic replacement, split membership,
-wrapper calls on hybrids, analytic Shapley values, padding, safe NPZ round-trip
-and additivity errors. Figure smoke tests use saved mock-game results when
-matplotlib is installed. They do not establish real FOLD inference equivalence
-or validate a baseline explanation.
-
-Validation with the first real baseline must cover bundle save/load, prediction
-equivalence across reload and `FoldPredictor`, RF-only loading, real TreeSHAP
-and numerical additivity, attribution save/load, complete figure rendering,
-and exact correspondence of recorded IDs with the trained run. These checks
-are not established by syntax, configuration or data-only tests.
-
-### Package structure
-
-- `core/`: shared artifacts, configuration, provenance and data selection.
-- `rf/`: Random Forest TreeSHAP, results, figures and CLI commands.
-- `end_to_end/`: FOLD prediction, grouped Shapley, results, figures and CLI commands.
-- `open_world/`: monitored/background selection, binary FOLD prediction, exact grouped Shapley explanations, results, plots and CLI commands.
-- `tests/`: explainability tests.
-
-`train.py` orchestrates training/export, `__main__.py` dispatches the existing
-CLI commands, and `__init__.py` preserves the top-level public API.
-
-### Open-world explainability
-
-`explain-open-world` explains `binary_output = P(monitored)` of an already
-trained **open-world, two-head FOLD** bundle: 1 means monitored, 0 background.
-The RF and every dependent input are recomputed for each hybrid trace. The
-existing exact grouped Shapley game is reused; `multi_output`, RF TreeSHAP,
-training and artifact formats are unchanged. The earlier limitations on binary
-explanations apply to the RF/multiclass commands; `open_world/` now implements
-this separate binary workflow, without N+1 or auxiliary-head explanations.
-
-Supply the original monitored CSV and the exact background pool CSV used by
-the experiment (`trace_id,pkt_idx,t,size,role`, with optional `#` provenance
-comments). IDs and SHA-256 hashes are verified against `split_ids` and
-`background_split_ids`. Hashes cover file bytes, including LF/CRLF differences.
-The pool is read, never regenerated. pandas is needed for its original CSV
-loading semantics; TensorFlow/Keras are needed for real FOLD inference.
-
-Select either or both test populations with an explicit JSON file:
-
-```json
-{
-  "output": "binary_output",
-  "monitored_sample_ids": ["recorded-monitored-test-id"],
-  "background_sample_ids": ["123"]
-}
+```bash
+python -m fold.explainability plot-open-world \
+  --attributions explanations/openworld_r0.30/exp_001/binary/binary_monitored_shap.npz \
+  --out-dir explanations/openworld_r0.30/exp_001/binary --sample-index 0
 ```
 
-Use real IDs from the corresponding bundle splits; omit an unused list or use
-`[]`. At least one sample is required. Row order is monitored first, then
-background, preserving each list's order. Duplicates, wrong-population IDs and
-IDs outside the appropriate test split are rejected. Raw IDs are saved together
-with population arrays; internal `monitored:`/`background:` prefixes prevent
-collisions between source namespaces.
+Use `plot-fold` for the multiclass NPZ. In binary results, monitored rows precede
+background rows; `--sample-index` refers to this combined order.
 
-SHAP references are distinct from open-world background traffic: the reference
-set includes **both** monitored and background *training* traces. The default
-total is 16, split equally; odd totals give the extra reference to monitored,
-and totals below 2 are rejected. Eligibility (at least the effective number of
-resolutions) is checked before sampling; insufficient eligible candidates fail
-explicitly. Both population samplers use the given seed independently. The
-effective group count is fixed by the shortest selected sample, never by a
-short reference. These references define a balanced finite game, not the ratio
-of traffic in the training experiment.
+## Selections
 
-```console
-python -m fold.explainability explain-open-world --bundle artifacts/openworld_r0.30/exp_001/bundle --trusted --dataset data/odoh_traces.csv --background-pool data/background_pool.csv --sample-ids-file selections/openworld_r0.30_binary.json --reference-ids-file selections/openworld_common_binary_references.json --num-groups 4 --reference-size 16 --seed 0 --batch-size 16 --out-dir explanations/openworld_r0.30/exp_001/binary
-python -m fold.explainability plot-open-world --attributions explanations/openworld_r0.30/exp_001/binary/binary_monitored_shap.npz --out-dir explanations/openworld_r0.30/exp_001/binary --sample-index 0
+| File under `selections/` | Purpose |
+| --- | --- |
+| `baseline_fold_instagram.json` | 15 monitored evaluation IDs, target class 8; reused for multiclass comparisons |
+| `openworld_r0.30_binary.json` | 15 monitored + 15 background evaluation IDs at 30% |
+| `openworld_r0.40_binary.json` | Same population counts at 40% |
+| `openworld_r0.50_binary.json` | Same population counts at 50% |
+| `openworld_r0.60_binary.json` | Same population counts at 60% |
+| `openworld_r0.70_binary.json` | Same population counts at 70% |
+| `openworld_common_binary_references.json` | 8 monitored + 8 background training IDs, common across ratios |
+
+Selections are tied to the corresponding split/background pool and may need
+to be regenerated for a new campaign. There is no selection-generation CLI.
+
+## Aggregating results
+
+Both scripts use fixed repository-relative paths and write to `analysis/`,
+replacing aggregate CSV/PNG outputs when regenerated.
+
+### Open-world
+
+With all five `result.json` files and all ten multiclass/binary NPZ files at
+the paths above, rebuild summaries and figures:
+
+```bash
+python analysis/make_openworld_summary.py
 ```
 
-These are example paths; the bundle, pool and selection must already exist.
-Use `--allow-version-mismatch` only when accepting the existing loader's
-version warnings, and `--skip-plots` to save without matplotlib. `--sample-index`
-is a row in the combined saved order. Plotting saved results needs no model,
-TensorFlow or SHAP computation; binary plotting uses matplotlib, not `shap`.
+With incomplete runtime inputs, the script redraws the existing CSV summaries.
+To explicitly plot those summaries without training or rewriting the CSVs:
 
-An optional `--reference-ids-file` uses the same `output` field with
-`monitored_reference_ids` and `background_reference_ids`. Each list retains
-its order and must match the balanced quotas for `--reference-size`; all IDs
-must be eligible members of that bundle's corresponding training split. This
-supports reuse across ratios only where the recorded splits permit it.
+```bash
+python analysis/make_openworld_summary.py --from-csv
+```
 
-The new `binary_monitored_shap.npz` format is
-`fold-open-world-binary-shap`, version 1, loaded with `allow_pickle=False`.
-It stores output/positive-class identity, group values, bases, probabilities,
-raw IDs and population types, group bounds and provenance: scenario/ratio,
-sample/reference lists, eligible counts, seed, requested/effective groups,
-dataset/pool/selection/manifest/source hashes and runtime versions. Additivity
-is checked at construction, save and load (`rtol=1e-5`, `atol=1e-6`). Existing
-NPZ files are not overwritten. Four `binary_monitored_*.png` figures provide a
-local waterfall, mean absolute group bar, population-labelled heatmap and
-contributions along resolution order. No ratio campaign is scheduled automatically; completed runs can be summarized with `analysis/make_openworld_summary.py`.
+| Output | Files under `analysis/` |
+| --- | --- |
+| CSV | `openworld_metrics.csv`, `openworld_multi_shap.csv`, `openworld_binary_shap.csv` |
+| XAI figures | `openworld_multi_mean_abs_phi.png`, `openworld_binary_monitored_mean_abs_phi.png`, `openworld_binary_background_mean_abs_phi.png` |
+| Performance figures | `openworld_accuracy.png`, `openworld_macro_f1.png`, `openworld_detection_tpr.png`, `openworld_detection_fpr.png`, `openworld_detection_auc.png` |
+
+### Defense
+
+`analysis/make_defense_summary.py` reads baseline plus all 20 defense metrics
+and explanation NPZ files at fixed repository-relative paths. For a new
+campaign, place its inputs at the paths expected by the script, including
+the new baseline explanation at
+`explanations/baseline/fold_instagram/fold_class_008_shap.npz`.
+
+```bash
+python analysis/make_defense_summary.py
+```
+
+| Output | Files under `analysis/` |
+| --- | --- |
+| CSV | `defense_metrics.csv`, `defense_shap.csv` |
+| Performance figures | `defense_fold_accuracy.png`, `defense_fold_macro_f1.png`, `defense_forest_accuracy.png`, `defense_forest_macro_f1.png` |
+| Cohort probability | `defense_instagram_mean_probability.png` |
+| XAI figures | `defense_padding_mean_abs_phi.png`, `defense_dummy_mean_abs_phi.png`, `defense_fragmentation_mean_abs_phi.png`, `defense_combined_mean_abs_phi.png` |
+
+### Metric definitions
+
+| Metric | Population and decision |
+| --- | --- |
+| Accuracy | Correct website predictions; in open world, includes correct background rejections over the full evaluation set |
+| Macro-F1 | Mean F1 over monitored website classes; background contributes negatives but is excluded from the class average |
+| Detection TPR | Fraction of monitored evaluation traces with monitored score > 0.5 |
+| Detection FPR | Fraction of background evaluation traces incorrectly accepted with score > 0.5 |
+| Detection ROC AUC | Monitored positives versus background negatives over all score thresholds |
+
+Detection measures monitored/background membership, separately from website
+classification accuracy and macro-F1.
+
+## Reproducibility and trust
+
+The bundle manifest records model configuration, runtime versions, provenance
+and artifact hashes. Loaders check artifact integrity and version compatibility;
+use the same environment for training and inference. `--allow-version-mismatch`
+accepts version warnings without guaranteeing equivalent predictions.
+
+Use `--trusted` only for bundles you trust: joblib and pickle loading can execute
+code. This also applies to the generated background pickle.
