@@ -122,3 +122,11 @@ class FoldPredictor:
     def for_class(self, target_class: int) -> Callable[[Any], np.ndarray]:
         """Bind a class index to a callable returning one probability per trace."""
         return partial(self.predict_target, target_class=self._target(target_class))
+
+    def predict_targets(self, traces: Any, target_classes) -> np.ndarray:
+        """Gather a different monitored class for each row in one batched call."""
+        targets = np.asarray([self._target(c) for c in target_classes], dtype=np.int64)
+        probabilities = self.predict_proba(traces)
+        if targets.shape != (len(probabilities),):
+            raise ValueError("Provide one target class per trace")
+        return probabilities[np.arange(len(targets)), targets]

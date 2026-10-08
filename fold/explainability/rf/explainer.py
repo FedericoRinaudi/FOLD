@@ -128,3 +128,27 @@ class ForestTreeExplainer:
         return ForestExplanation(np.asarray(selected), base, probabilities, features,
                                  sample_ids, self.background_ids, self.target_class,
                                  self.class_names, self.feature_names, metadata)
+
+    def explain_targets(self, traces, *, sample_ids, target_classes):
+        """Reuse one actual TreeExplainer/reference distribution for mixed labels."""
+        from copy import copy
+
+        traces, ids, targets = _traces(traces), list(sample_ids), list(target_classes)
+        if not traces or len(traces) != len(ids) or len(ids) != len(targets):
+            raise ValueError("Provide one ID and target class per trace")
+        if len(set(ids)) != len(ids):
+            raise ValueError("Duplicate sample IDs")
+        if any(type(c) is not int or not 0 <= c < len(self.class_names) for c in targets):
+            raise ValueError("target_classes must index class_names")
+        means = self.forest.predict_proba(self.background).mean(axis=0, dtype=np.float64)
+        results = {}
+        for target in sorted(set(targets)):
+            columns = np.flatnonzero(self.forest.clf.classes_ == target)
+            if len(columns) != 1:
+                raise ValueError(f"Class {target} absent from fitted forest")
+            engine = copy(self)  # shares fitted forest, encoder and SHAP engine
+            engine.target_class, engine.column = target, int(columns[0])
+            engine.background_probability = float(means[target])
+            rows = [i for i, c in enumerate(targets) if c == target]
+            results[target] = engine.explain([traces[i] for i in rows], sample_ids=[ids[i] for i in rows])
+        return results

@@ -177,3 +177,11 @@ If you use this code or the dataset, please cite:
 Federico Rinaudi, Abhinav Kumar, Mohammad Amir Salari, Reza Tourani, Alessio
 Sacco, Guido Marchetto and Flavio Esposito, *Characterizing Privacy Risks in
 Oblivious DNS over HTTPS via Website Fingerprinting*.
+# Five-repetition, all-sites explainability
+
+The new campaign is documented in [fold/explainability/README.md](fold/explainability/README.md#five-repetition-all-sites-campaign).
+It covers 26 configurations and experiment IDs 1–5, checks the original test
+splits before training, and requires 15 held-out sample-run observations for
+each of 100 sites, maximizing distinct trace IDs (Spotify: 14 IDs, one reuse
+across runs). Run `python -m fold.explainability.campaign --dry-run` to inspect the
+130 training/evaluation cells without executing them.

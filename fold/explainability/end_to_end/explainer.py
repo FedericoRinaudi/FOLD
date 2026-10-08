@@ -119,7 +119,7 @@ class FoldGroupExplainer:
             raise ValueError("FOLD must return one finite target probability per trace")
         return values
 
-    def explain(self, traces, *, sample_ids):
+    def explain(self, traces, *, sample_ids, effective_num_groups=None):
         traces = _traces(traces)
         sample_ids = tuple(_ids(list(sample_ids), "sample_ids"))
         if len(traces) != len(sample_ids) or not set(sample_ids) <= self.test_ids:
@@ -131,6 +131,10 @@ class FoldGroupExplainer:
         unit_bounds = bounds.copy()
         ref_bounds = np.full((len(traces), len(self.references), self.num_groups, 2), -1, dtype=np.int64)
         count = min(self.num_groups, min(len(e) - 1 for e in edges))
+        if effective_num_groups is not None:
+            if type(effective_num_groups) is not int or not 1 <= effective_num_groups <= count:
+                raise ValueError("effective_num_groups must fit every sample")
+            count = effective_num_groups
         if any(len(r) - 1 < count for r in self.reference_edges):
             raise ValueError(f"Selected reference is shorter than g_run={count}; filter before sampling")
         counts = np.full(len(traces), count, dtype=np.int64)
@@ -166,3 +170,36 @@ class FoldGroupExplainer:
                                sample_ids, self.reference_ids, self.target_class,
                                self.class_names[self.target_class], counts, bounds, unit_bounds,
                                ref_bounds, self.seed, metadata)
+
+    def explain_targets(self, traces, *, sample_ids, target_classes):
+        """Mixed-target exact games, sharing loaded models and fixed references.
+
+        Results retain the compatible per-class numeric format. Group count is
+        fixed across the entire cohort, and original sample order is recorded.
+        Scalar games are evaluated through the same batched predictor as before;
+        no model is loaded or trained in this method.
+        """
+        traces = _traces(traces)
+        ids = list(sample_ids)
+        targets = list(target_classes)
+        if not traces or len(traces) != len(ids) or len(ids) != len(targets):
+            raise ValueError("Provide one ID and target class per nonempty sample batch")
+        _ids(ids, "sample_ids")
+        if not set(ids) <= self.test_ids:
+            raise ValueError("Samples must be recorded test IDs")
+        if any(type(c) is not int or not 0 <= c < len(self.class_names) for c in targets):
+            raise ValueError("target_classes must index class_names")
+        count = min(self.num_groups, min(len(resolution_edges(t)) - 1 for t in traces))
+        results = {}
+        for target in sorted(set(targets)):
+            rows = [i for i, c in enumerate(targets) if c == target]
+            engine = FoldGroupExplainer(
+                self.predictor, self.references, reference_ids=self.reference_ids,
+                target_class=target, class_names=self.class_names, metadata=self.metadata,
+                eligible_reference_count=self.eligible_reference_count,
+                num_groups=self.num_groups, seed=self.seed)
+            result = engine.explain([traces[i] for i in rows], sample_ids=[ids[i] for i in rows], effective_num_groups=count)
+            result.metadata["multi_target_sample_indices"] = rows
+            result.metadata["multi_target_requested_groups"] = self.num_groups
+            results[target] = result
+        return results

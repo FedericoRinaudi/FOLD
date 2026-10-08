@@ -17,3 +17,10 @@ data/background_pool.csv
 !data/odoh_traces.csv
 !data/target_websites.csv
 logs/
+
+# Generated cross-run campaign outputs. The selection JSON remains versioned.
+.pytest_cache/
+artifacts/
+explanations/all_sites/
+analysis/cross_run/preflight/
+analysis/cross_run/summary/

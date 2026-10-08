@@ -350,3 +350,50 @@ accepts version warnings without guaranteeing equivalent predictions.
 
 Use `--trusted` only for bundles you trust: joblib and pickle loading can execute
 code. This also applies to the generated background pickle.
+
+## Five-repetition all-sites campaign
+
+The campaign runs 26 configurations in five repetitions (experiment IDs 1–5):
+closed world, five open-world ratios, and four defense families at five intensities.
+Original seeds, splits, preprocessing and training settings are preserved.
+
+The immutable selection is
+`analysis/cross_run/selections/all_sites_cross_run.json`: 1,500 held-out
+sample-run observations, 15 per site, and 1,499 distinct traces. For 99 sites
+all 15 traces are distinct; Spotify has 14 distinct traces and one trace assigned
+to two repetitions in which it is TEST. Each observation is identified by
+`(sample_id, experiment_id)`; train/validation observations are excluded.
+
+Multiclass explanations target each observation's true site dynamically.
+FOLD uses exact G1–G4 Shapley values; RF uses probability TreeSHAP over 97 features.
+Open-world binary explanations target P(monitored) with separate monitored and
+background cohorts. Raw attributions retain run IDs and explicit trace reuse.
+
+Run these commands from the repository root:
+
+```bash
+python -m fold.explainability.campaign.preflight --prepare-selection
+python -m fold.explainability.campaign --dry-run --stage all
+# On the training server, with TensorFlow and the generated background pool:
+python -m fold.explainability.campaign --stage all --trusted
+python -m fold.explainability.campaign.summarize --bootstrap 10000 --seed 20261008
+python -m fold.explainability.campaign.figures
+python -m fold.explainability.campaign.sensitivity
+```
+
+The preflight validates TEST membership and cross-run availability; the dry-run
+prints 130 training/evaluation cells without training or inference. Selection
+content is immutable. Verified bundles and explanations can be resumed;
+inconsistent provenance or incomplete outputs are rejected.
+
+Outputs are `artifacts/` for bundles and evaluation,
+`explanations/all_sites/` for raw XAI, `analysis/cross_run/preflight/` for
+regenerable diagnostics, and `analysis/cross_run/summary/` for aggregate CSVs
+and figures. Generated outputs are ignored; the selection JSON is committed.
+
+Attributions average observations within site/run, then run means within site,
+then site means with equal weights. The 95% hierarchical percentile bootstrap
+resamples repetitions, sites and observations (10,000 draws, seed 20261008).
+Paired comparisons match run/site/sample keys. Dominant groups and heatmaps use
+the same site means; sensitivity removes only the marked Spotify reuse.
+Final attribution results require server inference.
