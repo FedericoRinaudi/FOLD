@@ -87,7 +87,15 @@ def verify_run(path, job, split, *, need_metrics=True):
         if report["experiment_id"] != job["experiment_id"] or report["scenario"] != job["fields"]["scenario"]:
             raise ValueError("Metrics provenance mismatch")
         for model in ("forest", "fold"):
-            if not all(np.isfinite(report[model][metric]) for metric in ("accuracy", "macro_f1")):
+            metrics = report[model]
+            accuracy = metrics.get("accuracy")
+            macro_f1 = metrics.get("macro_f1", metrics.get("f1"))
+            if (
+                accuracy is None
+                or macro_f1 is None
+                or not np.isfinite(accuracy)
+                or not np.isfinite(macro_f1)
+            ):
                 raise ValueError("Invalid performance metrics")
         labels = np.load(path / "y_test.npy", allow_pickle=False)
         if labels.shape != (len(split["test"]),) or np.any((labels < 0) | (labels >= 100)):
