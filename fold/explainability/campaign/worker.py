@@ -83,7 +83,17 @@ def binary_files(dataset, pool, metadata, monitored_selection, out):
     # Match monitored cohort size when possible, otherwise use all eligible test
     # backgrounds (binary background has no 15-per-site requirement).
     source = sorted(common_test) if common_test else actual["test"]
-    chosen = rng.choice(source, min(len(source), len(monitored_selection["sample_ids"])), replace=False).tolist()
+    source = [
+        tid for tid in source
+        if len(resolution_edges(background[tid])) - 1 >= 4
+    ]
+    if not source:
+        raise ValueError("No G1-G4 eligible binary background TEST traces")
+    chosen = rng.choice(
+        source,
+        min(len(source), len(monitored_selection["sample_ids"])),
+        replace=False,
+    ).tolist()
     samples = {"output": "binary_output", "monitored_sample_ids": monitored_selection["sample_ids"],
                "background_sample_ids": chosen}
     persist_selection(out / "binary_samples.json", samples)
@@ -139,62 +149,233 @@ def run(args):
     label_by_id = dict(zip(ids, labels))
     splits = {int(run): (split, label_by_id, len(bundle.class_names)) for run, split in full_selection["splits"].items()}
     validate_selection(full_selection, splits, bundle.class_names)
+
+    fold_policy = full_selection.get("fold_grouped_cohort")
+    fold_records_all = full_selection.get("fold_records")
+    if not isinstance(fold_policy, dict) or not isinstance(fold_records_all, list):
+        raise ValueError("Selection lacks the fixed G1-G4 eligible FOLD cohort")
+
+    fold_records = [
+        r for r in fold_records_all
+        if r["assigned_experiment_id"] == args.experiment_id
+    ]
+    if not fold_records:
+        raise ValueError(f"No G1-G4 eligible FOLD observations for exp_{args.experiment_id:03d}")
+
+    fold_selection = {
+        "sample_ids": [r["sample_id"] for r in fold_records],
+        "target_classes": [r["site_id"] for r in fold_records],
+        "experiment_id": args.experiment_id,
+        "split_ids": full_selection["splits"][str(args.experiment_id)],
+        "sampling_seed": full_selection["sampling_seed"],
+        "protocol": fold_policy["protocol"],
+        "records": fold_records,
+        "reuse_exceptions": [],
+        "cohort_description": fold_policy["primary_scope"],
+    }
+
     if metadata["dataset_sha256"] != binding["dataset"]:
         raise ValueError("Selected cohort dataset differs from bundle")
     pending = args.out_dir.parent / (args.out_dir.name + ".pending-" + uuid.uuid4().hex)
     pending.mkdir(parents=True)
     assigned_file = pending / "assigned_selection.json"
     persist_selection(assigned_file, selection)
-    # Shared original test IDs for all defenses/open-world in this repetition.
-    refs, samples, ref_ids, sample_ids, info = select_traces(
-        args.dataset, metadata, background_size=16, sample_ids_file=assigned_file,
-        reference_num_groups=4, seed=0)
+
+    fold_assigned_file = pending / "fold_g4_assigned_selection.json"
+    persist_selection(fold_assigned_file, fold_selection)
+
+    rf_cohort_info = {
+        "protocol": selection["protocol"],
+        "cohort_description": selection["cohort_description"],
+        "global_selection_sha256": binding["selection"],
+        "reuse_exceptions": selection["reuse_exceptions"],
+        "reused_trace_ids_this_run": [
+            r["sample_id"]
+            for r in selection["records"]
+            if r["is_reused_trace_id"]
+        ],
+        "cohort_role": "rf_and_performance_primary_100_site",
+    }
+
+    fold_cohort_info = {
+        "protocol": fold_policy["protocol"],
+        "cohort_description": fold_policy["primary_scope"],
+        "global_selection_sha256": binding["selection"],
+        "parent_selection_sha256": fold_policy["parent_selection_sha256"],
+        "eligibility": fold_policy["eligibility"],
+        "group_definition": fold_policy["group_definition"],
+        "n_sites": fold_policy["n_sites"],
+        "n_observations": fold_policy["n_observations"],
+        "n_full15_sites": fold_policy["n_full15_sites"],
+        "reused_trace_ids_this_run": [],
+        "cohort_role": "fold_grouped_g1_g4_eligible",
+    }
+
+    predictor = FoldPredictor(
+        bundle.encoder,
+        bundle.forest,
+        bundle.model,
+    )
+
+    # FOLD uses only the fixed G1-G4 eligible cohort.
+    refs, fold_samples, ref_ids, fold_sample_ids, info = select_traces(
+        args.dataset,
+        metadata,
+        background_size=16,
+        sample_ids_file=fold_assigned_file,
+        reference_num_groups=4,
+        seed=0,
+    )
+
     if info["effective_num_groups"] != 4:
-        raise ValueError("All-sites requires exactly G1-G4; a selected trace has fewer than four resolutions")
-    cohort_info = {"protocol": selection["protocol"], "cohort_description": selection["cohort_description"],
-                   "global_selection_sha256": binding["selection"], "reuse_exceptions": selection["reuse_exceptions"],
-                   "reused_trace_ids_this_run": [r["sample_id"] for r in selection["records"] if r["is_reused_trace_id"]]}
-    metadata = {**metadata, "selection": {**info, **cohort_info}}
-    predictor = FoldPredictor(bundle.encoder, bundle.forest, bundle.model)
-    engine = FoldGroupExplainer(predictor, refs, reference_ids=ref_ids, target_class=0,
-                               class_names=bundle.class_names, metadata=metadata,
-                               eligible_reference_count=info["eligible_reference_count"], num_groups=4)
-    rf_refs, _, rf_ids, _, rf_info = select_traces(args.dataset, metadata, background_size=32, sample_ids_file=assigned_file, seed=0)
-    rf = ForestTreeExplainer(bundle.encoder, bundle.forest, rf_refs, background_ids=rf_ids,
-                             target_class=0, class_names=bundle.class_names, metadata={**metadata, "selection": {**rf_info, **cohort_info}}, allow_multiclass=True)
+        raise ValueError(
+            "Fixed FOLD cohort unexpectedly failed the exact G1-G4 gate"
+        )
+
+    fold_metadata = {
+        **metadata,
+        "selection": {
+            **info,
+            **fold_cohort_info,
+        },
+    }
+
+    engine = FoldGroupExplainer(
+        predictor,
+        refs,
+        reference_ids=ref_ids,
+        target_class=0,
+        class_names=bundle.class_names,
+        metadata=fold_metadata,
+        eligible_reference_count=info["eligible_reference_count"],
+        num_groups=4,
+    )
+
+    # RF retains the original immutable 1500-observation cohort.
+    rf_refs, rf_samples, rf_ids, rf_sample_ids, rf_info = select_traces(
+        args.dataset,
+        metadata,
+        background_size=32,
+        sample_ids_file=assigned_file,
+        seed=0,
+    )
+
+    rf_metadata = {
+        **metadata,
+        "selection": {
+            **rf_info,
+            **rf_cohort_info,
+        },
+    }
+
+    rf = ForestTreeExplainer(
+        bundle.encoder,
+        bundle.forest,
+        rf_refs,
+        background_ids=rf_ids,
+        target_class=0,
+        class_names=bundle.class_names,
+        metadata=rf_metadata,
+        allow_multiclass=True,
+    )
+
     if len(rf.feature_names) != 97:
-        raise ValueError("All-sites RF requires the original 97 features")
+        raise ValueError(
+            "All-sites RF requires the original 97 features"
+        )
     with (pending / "raw_long.csv").open("x", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=LONG_FIELDS)
         writer.writeheader()
-        targets = selection["target_classes"]
-        # One site at a time bounds the TreeSHAP and NPZ memory, while retaining
-        # one model load and one TreeExplainer construction for the entire job.
+        fold_targets = fold_selection["target_classes"]
+        rf_targets = selection["target_classes"]
+
+        # Explain FOLD and RF on their explicitly different, fixed cohorts.
+        # Both cohorts are shared across every configuration, preserving
+        # exact pairing against baseline.
         for c in range(100):
-            indices = [i for i, target in enumerate(targets) if target == c]
-            if not indices:
-                continue  # Cross-run design may have unavailable site/run cells.
-            batch, bids = [samples[i] for i in indices], [sample_ids[i] for i in indices]
-            result = engine.explain_targets(batch, sample_ids=bids, target_classes=[c]*len(batch))[c]
-            result.save(pending / f"fold_class_{c:03d}.npz")
-            emit(writer, result, metadata, model="fold", site=bundle.class_names[c], label=c)
-            forest = rf.explain_targets(batch, sample_ids=bids, target_classes=[c]*len(batch))[c]
-            forest.save(pending / f"rf_class_{c:03d}.npz")
-            emit(writer, forest, metadata, model="rf", site=bundle.class_names[c], label=c)
+
+            fold_indices = [
+                i for i, target in enumerate(fold_targets)
+                if target == c
+            ]
+
+            if fold_indices:
+                batch = [
+                    fold_samples[i]
+                    for i in fold_indices
+                ]
+                bids = [
+                    fold_sample_ids[i]
+                    for i in fold_indices
+                ]
+
+                result = engine.explain_targets(
+                    batch,
+                    sample_ids=bids,
+                    target_classes=[c] * len(batch),
+                )[c]
+
+                result.save(
+                    pending / f"fold_class_{c:03d}.npz"
+                )
+
+                emit(
+                    writer,
+                    result,
+                    fold_metadata,
+                    model="fold",
+                    site=bundle.class_names[c],
+                    label=c,
+                )
+
+            rf_indices = [
+                i for i, target in enumerate(rf_targets)
+                if target == c
+            ]
+
+            if rf_indices:
+                batch = [
+                    rf_samples[i]
+                    for i in rf_indices
+                ]
+                bids = [
+                    rf_sample_ids[i]
+                    for i in rf_indices
+                ]
+
+                forest = rf.explain_targets(
+                    batch,
+                    sample_ids=bids,
+                    target_classes=[c] * len(batch),
+                )[c]
+
+                forest.save(
+                    pending / f"rf_class_{c:03d}.npz"
+                )
+
+                emit(
+                    writer,
+                    forest,
+                    rf_metadata,
+                    model="rf",
+                    site=bundle.class_names[c],
+                    label=c,
+                )
+
         if metadata["scenario"] == "open-world":
             from ..open_world.data import select_open_world
             from ..open_world.predictor import BinaryFoldPredictor
             from ..open_world.explainer import BinaryGroupExplainer
 
-            policy = binary_files(args.dataset, args.background_pool, metadata, selection, pending)
-            binary_selection = select_open_world(args.dataset, args.background_pool, metadata,
+            policy = binary_files(args.dataset, args.background_pool, fold_metadata, fold_selection, pending)
+            binary_selection = select_open_world(args.dataset, args.background_pool, fold_metadata,
                                                  sample_ids_file=pending / "binary_samples.json", num_groups=4,
                                                  reference_ids_file=pending / "binary_references.json")
             if binary_selection.metadata["selection"]["effective_num_groups"] != 4:
                 raise ValueError("Binary all-sites requires exactly four nonempty resolution groups")
             binary = BinaryGroupExplainer(BinaryFoldPredictor(bundle), binary_selection).explain()
             binary.metadata.update(policy)
-            binary.metadata["cross_run_cohort"] = cohort_info
+            binary.metadata["cross_run_cohort"] = fold_cohort_info
             binary.save(pending / "binary.npz")
             # Emit by population/site with a lightweight row view.
             from types import SimpleNamespace
@@ -204,7 +385,7 @@ def run(args):
                 view = SimpleNamespace(values=binary.values[i:i+1], base_values=binary.base_values[i:i+1],
                                        probabilities=binary.probabilities[i:i+1], sample_ids=(tid,),
                                        reference_ids=binary.reference_ids, metadata=binary.metadata)
-                emit(writer, view, metadata, model="fold", site=site, label=label,
+                emit(writer, view, fold_metadata, model="fold", site=site, label=label,
                      cohort=population, output="binary_output")
     files = {f.name: _digest(f) for f in pending.iterdir() if f.is_file()}
     (pending / "complete.json").write_text(json.dumps({"binding": binding, "sha256": files}, indent=2), encoding="utf-8")

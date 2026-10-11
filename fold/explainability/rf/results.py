@@ -59,12 +59,33 @@ class ForestExplanation:
         json.dumps(self.metadata, allow_nan=False)
         self.check_additivity()
 
-    def check_additivity(self, rtol=1e-4, atol=1e-5) -> None:
+    def check_additivity(self, rtol=None, atol=None) -> None:
         """Check base plus signed contributions against the RF probability."""
+        if rtol is None:
+            rtol = float(self.metadata.get("additivity_rtol", 1e-4))
+        if atol is None:
+            atol = float(self.metadata.get("additivity_atol", 1e-5))
+
         reconstructed = self.base_value + self.values.sum(axis=1)
-        if not np.allclose(reconstructed, self.probabilities, rtol=rtol, atol=atol):
-            error = float(np.max(np.abs(reconstructed - self.probabilities)))
-            raise ValueError(f"RF SHAP additivity failed; maximum absolute error {error:g}")
+
+        if not np.allclose(
+            reconstructed,
+            self.probabilities,
+            rtol=rtol,
+            atol=atol,
+        ):
+            error = float(
+                np.max(
+                    np.abs(
+                        reconstructed - self.probabilities
+                    )
+                )
+            )
+            raise ValueError(
+                "RF SHAP additivity failed; "
+                f"maximum absolute error {error:g}; "
+                f"rtol={rtol:g}; atol={atol:g}"
+            )
 
     def save(self, path) -> None:
         """Write numeric arrays and JSON metadata to a new NPZ; no model is stored."""

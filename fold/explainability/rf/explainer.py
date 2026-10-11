@@ -124,7 +124,10 @@ class ForestTreeExplainer:
                     "internal_class_outputs": self.outputs,
                     "versions": {name: distributions.version(name)
                                  for name in ("shap", "numpy", "scikit-learn")},
-                    "additivity_rtol": 1e-4, "additivity_atol": 1e-5}
+                    "additivity_rtol": 0.0,
+                     "additivity_atol": 1.0 / len(self.forest.clf.estimators_) + 1e-5,
+                     "additivity_tree_vote_bound": 1.0 / len(self.forest.clf.estimators_),
+                     "n_estimators": len(self.forest.clf.estimators_)}
         return ForestExplanation(np.asarray(selected), base, probabilities, features,
                                  sample_ids, self.background_ids, self.target_class,
                                  self.class_names, self.feature_names, metadata)

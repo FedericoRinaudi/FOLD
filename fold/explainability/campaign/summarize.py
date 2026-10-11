@@ -43,7 +43,15 @@ def summary(frame, *, bootstrap, seed, statistic="abs", scope="all_sites"):
 
 def validate_raw_cohort(group, selection):
     """Require exactly the assigned sample-run pairs, including explicit reuse."""
-    expected = {(r["assigned_experiment_id"], r["site_id"], r["sample_id"]): r for r in selection["records"]}
+    records = (
+        selection.get("fold_records", selection["records"])
+        if group.model.iloc[0] == "fold"
+        else selection["records"]
+    )
+    expected = {
+        (r["assigned_experiment_id"], r["site_id"], r["sample_id"]): r
+        for r in records
+    }
     observations = group.drop_duplicates(["experiment_id", "site_id", "sample_id"])
     actual = {(int(r.experiment_id), int(r.site_id), r.sample_id): r for r in observations.itertuples()}
     if set(expected) != set(actual):
@@ -80,6 +88,18 @@ def aggregate(raw, *, bootstrap=10000, seed=20261008, require_complete=True, sel
         mean=("abs_phi", "mean"), mean_signed=("phi", "mean"), n_samples=("sample_id", "nunique"))
     site["n_observations"] = site.n_samples  # no repeated pair is permitted in a site/run
     site["n_unique_traces"] = site.n_samples
+    fold_counts = {}
+    if selection is not None:
+        for record in selection.get("fold_records", []):
+            site_name = record["site_name"]
+            fold_counts[site_name] = fold_counts.get(site_name, 0) + 1
+
+    full15_sites = {
+        site_name
+        for site_name, count in fold_counts.items()
+        if count == 15
+    }
+
     global_rows, delta_rows, pairing = [], [], []
     for key, group in raw.groupby(KEYS):
         fields = dict(zip(KEYS, key))
@@ -104,6 +124,95 @@ def aggregate(raw, *, bootstrap=10000, seed=20261008, require_complete=True, sel
             for scope in ("instagram", "all_sites"):
                 global_rows.extend({**fields, **row, "pairing": "exact_run_site_sample"} for row in summary(
                     delta, bootstrap=bootstrap, seed=seed, statistic="delta_abs", scope=scope))
+    # --------------------------------------------------------
+    # Prespecified sensitivity analysis:
+    # 76 sites with the full quota of 15 DISTINCT eligible
+    # G1-G4 traces. This is separate from the primary 92-site
+    # result and does not recompute SHAP.
+    # --------------------------------------------------------
+    full15_rows = []
+
+    fold_monitored = raw[
+        (raw.model == "fold")
+        & (raw.output == "multi_output")
+        & (raw.cohort == "monitored")
+        & (raw.site.isin(full15_sites))
+    ].copy()
+
+    if not fold_monitored.empty:
+        for key, group in fold_monitored.groupby(KEYS):
+            fields = dict(zip(KEYS, key))
+
+            for statistic in ("abs",):
+                rows = summary(
+                    group,
+                    bootstrap=bootstrap,
+                    seed=seed,
+                    statistic=statistic,
+                    scope="all_sites",
+                )
+
+                for row in rows:
+                    row = dict(row)
+                    row["scope"] = "all_sites_full15"
+                    row["sensitivity_definition"] = (
+                        "sites_with_15_distinct_g1_g4_eligible_test_traces"
+                    )
+                    full15_rows.append({**fields, **row})
+
+            probability = group.drop_duplicates(
+                ["experiment_id", "site", "sample_id"]
+            ).copy()
+
+            probability["dimension"] = "target_probability"
+            probability["phi"] = probability.probability
+
+            rows = summary(
+                probability,
+                bootstrap=bootstrap,
+                seed=seed,
+                statistic="signed",
+                scope="all_sites",
+            )
+
+            for row in rows:
+                row = dict(row)
+                row["scope"] = "all_sites_full15"
+                row["sensitivity_definition"] = (
+                    "sites_with_15_distinct_g1_g4_eligible_test_traces"
+                )
+                full15_rows.append({**fields, **row})
+
+    full15_delta_rows = []
+
+    delta_frame = pd.DataFrame(delta_rows)
+
+    if not delta_frame.empty and full15_sites:
+        subset = delta_frame[
+            delta_frame.site.isin(full15_sites)
+        ].copy()
+
+        if not subset.empty:
+            for key, group in subset.groupby(KEYS):
+                fields = dict(zip(KEYS, key))
+
+                rows = summary(
+                    group,
+                    bootstrap=bootstrap,
+                    seed=seed,
+                    statistic="delta_abs",
+                    scope="all_sites",
+                )
+
+                for row in rows:
+                    row = dict(row)
+                    row["scope"] = "all_sites_full15"
+                    row["pairing"] = "exact_run_site_sample"
+                    row["sensitivity_definition"] = (
+                        "sites_with_15_distinct_g1_g4_eligible_test_traces"
+                    )
+                    full15_delta_rows.append({**fields, **row})
+
     global_frame = pd.DataFrame(global_rows)
     if not ((global_frame.ci_low <= global_frame["mean"]) & (global_frame["mean"] <= global_frame.ci_high)).all():
         raise ValueError("Bootstrap percentile interval does not enclose point estimate; inspect data/draw count")
@@ -131,11 +240,42 @@ def aggregate(raw, *, bootstrap=10000, seed=20261008, require_complete=True, sel
             dominant_summary.append({**dict(zip(KEYS, key)), "group": g, "count": int(counts.get(g, 0)),
                                      "mean": counts.get(g, 0)/len(frame), "n_sites": len(frame),
                                      "meaning": "argmax of each site's equal-run mean absolute attribution; each site counted once"})
+    observations = raw.drop_duplicates(
+        [
+            "configuration",
+            "model",
+            "output",
+            "cohort",
+            "experiment_id",
+            "site",
+            "sample_id",
+        ]
+    )
+
+    coverage = observations.groupby(
+        KEYS + ["site"],
+        as_index=False,
+    ).agg(
+        n_observations=("sample_id", "size"),
+        n_unique_traces=("sample_id", "nunique"),
+        n_runs=("experiment_id", "nunique"),
+    )
+
+    coverage["full15_fold_sensitivity_site"] = (
+        coverage.site.isin(full15_sites)
+        & (coverage.model == "fold")
+        & (coverage.output == "multi_output")
+        & (coverage.cohort == "monitored")
+    )
+
     sensitivity = sensitivity_check(raw, selection)
     return {"site_summary": site, "global_summary": global_frame, "delta_raw_long": pd.DataFrame(delta_rows),
             "pairing": pd.DataFrame(pairing), "dominant_sites": cross_winners,
             "dominant_sites_per_run": winners, "dominant_per_run": distribution,
             "dominant_summary": pd.DataFrame(dominant_summary), "heatmap": heatmap,
+            "coverage": coverage,
+            "full15_global_summary": pd.DataFrame(full15_rows),
+            "full15_delta_summary": pd.DataFrame(full15_delta_rows),
             "reuse_sensitivity": sensitivity}
 
 
