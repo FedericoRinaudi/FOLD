@@ -341,6 +341,41 @@ def performance(root, *, bootstrap, seed, complete=True):
                             rows.append({"configuration": configuration, "experiment_id": run, "model": model,
                                          "metric": f"{metric}.{name}" if isinstance(value, dict) else name, "value": number})
     raw = pd.DataFrame(rows)
+
+    # The evaluator stores monitored-class macro-F1 as "f1".
+    # Migrated exp_001 files additionally contain the identical alias
+    # "macro_f1".  Canonicalize the name, verify duplicate aliases agree,
+    # then retain one row per configuration/run/model/metric.
+    if not raw.empty:
+        raw["metric"] = raw["metric"].replace({"f1": "macro_f1"})
+
+        keys = [
+            "configuration",
+            "experiment_id",
+            "model",
+            "metric",
+        ]
+
+        duplicate = raw.duplicated(keys, keep=False)
+
+        if duplicate.any():
+            duplicated = raw.loc[duplicate]
+
+            spread = (
+                duplicated.groupby(keys)["value"]
+                .agg(lambda x: float(x.max() - x.min()))
+            )
+
+            bad = spread[spread > 1e-12]
+
+            if not bad.empty:
+                raise ValueError(
+                    "Conflicting values found while canonicalizing "
+                    "f1/macro_f1 aliases"
+                )
+
+            raw = raw.drop_duplicates(keys, keep="first")
+
     summaries = []
     if not raw.empty:
         for key, frame in raw.groupby(["configuration", "model", "metric"]):
