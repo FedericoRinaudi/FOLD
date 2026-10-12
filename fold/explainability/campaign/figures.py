@@ -87,16 +87,61 @@ def plot(input_dir, out_dir):
         fig.savefig(out_dir / f"openworld_binary_{statistic}.png", dpi=180)
         plt.close(fig)
     heatmap = pd.read_csv(input_dir / "heatmap.csv")
+    site_summary = pd.read_csv(input_dir / "site_summary.csv")
+
+    # RF uses the canonical 100-site cohort, so it supplies the complete,
+    # deterministic row universe for the grouped-FOLD heatmaps.
+    canonical_sites = sorted(site_summary[
+        (site_summary.configuration == "baseline")
+        & (site_summary.model == "rf")
+        & (site_summary.output == "multi_output")
+        & (site_summary.cohort == "monitored")
+    ].site.unique())
+
+    if len(canonical_sites) != 100:
+        raise ValueError(
+            f"Expected canonical 100 monitored sites, found {len(canonical_sites)}"
+        )
+
     # Common scale across configurations makes the requested maps comparable.
     vmax = heatmap["mean"].max()
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad("lightgray")
+
     for configuration, frame in heatmap.groupby("configuration"):
-        matrix = frame.pivot(index="site", columns="dimension", values="mean").sort_index()
+        matrix = frame.pivot(
+            index="site",
+            columns="dimension",
+            values="mean",
+        ).reindex(
+            index=canonical_sites,
+            columns=["G1", "G2", "G3", "G4"],
+        )
+
+        unavailable = int(matrix.isna().all(axis=1).sum())
+
         fig, ax = plt.subplots(figsize=(7, 22), constrained_layout=True)
-        picture = ax.imshow(matrix.to_numpy(), aspect="auto", vmin=0, vmax=vmax, cmap="viridis")
+        picture = ax.imshow(
+            np.ma.masked_invalid(matrix.to_numpy(dtype=float)),
+            aspect="auto",
+            vmin=0,
+            vmax=vmax,
+            cmap=cmap,
+        )
         ax.set_xticks(range(4), matrix.columns)
         ax.set_yticks(range(len(matrix)), matrix.index, fontsize=7)
-        ax.set_title(f"{configuration}: mean over repetition/site means")
-        fig.colorbar(picture, ax=ax, label="Mean |phi| (probability units)")
+        ax.set_title(
+            f"{configuration}: mean over available repetition/site means; "
+            f"unavailable={unavailable}/100"
+        )
+        ax.set_xlabel(
+            "Gray row = no held-out trace with >=4 complete ODoH resolutions"
+        )
+        fig.colorbar(
+            picture,
+            ax=ax,
+            label="Mean |phi| (probability units)",
+        )
         fig.savefig(out_dir / f"heatmap_{configuration}.png", dpi=160)
         plt.close(fig)
     dominant = pd.read_csv(input_dir / "dominant_summary.csv")
