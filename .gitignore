@@ -15,4 +15,3 @@ data/background_pool.csv
 
 # The dataset and the list of monitored websites are part of the release.
 !data/odoh_traces.csv
-!data/target_websites.csv
