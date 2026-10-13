@@ -35,20 +35,18 @@ To try a single repetition first, run `REPS=1 bash run_campaign.sh`.
 
 ## Experiments
 
-The full campaign is made of 10 repetitions of 47 jobs, 470 in total. Each job trains the models it needs, one at a time so that each training releases the GPU memory before the next one starts, then evaluates them. Every job writes to its own directory, so the jobs can run on different machines: `run_campaign.sh --list` prints all of them, and `SHARD=i/N bash run_campaign.sh` runs the i-th of N shares. The results are merged by copying the directories together.
+| Experiment | Results directory |
+|---|---|
+| Padding, dummy packets, fragmentation and all three together, at five probabilities each, against an adversary that retrains on defended traffic | `defense_<mechanism>_p<p>` |
+| The same defenses against an adversary trained only on undefended traffic | `static_sweep` |
+| Open world, with five proportions of traffic from websites outside the monitored set | `openworld_r<ratio>` |
+| FOLD's two output heads compared with a single softmax over N+1 classes | `heads_two_r<ratio>`, `heads_n1_r<ratio>` |
+| Generalization to a client location not seen in training | `location` |
+| Deep Fingerprinting baseline | `deep_fingerprinting` |
 
-| Directory | Jobs per repetition | Measures | In the paper |
-|---|---|---|---|
-| `defense_<mechanism>_p<p>` | 20 | padding, dummy injection, fragmentation and all three together, each at five probabilities, against an adversary that retrains on defended traffic | Figs. 9, 10 |
-| `openworld_r<ratio>` | 5 | five proportions of traffic from websites outside the monitored set | Figs. 4, 5, 6 |
-| `heads_two_r<ratio>`, `heads_n1_r<ratio>` | 10 | FOLD's two output heads against a single softmax over N+1 classes | Fig. 8 |
-| `static_sweep` | 1 | a model trained on undefended traffic and evaluated under every defense | Table IV |
-| `deep_fingerprinting` | 1 | Deep Fingerprinting in the closed world | Section VI-A |
-| `location` | 10 | training without one client location, and a random split for reference | Table V |
+The full campaign is made of 10 repetitions of 47 jobs, 470 in total, each with its own seed. Every job writes to its own directory, so the jobs can run on different machines: `run_campaign.sh --list` prints all of them, and `SHARD=i/N bash run_campaign.sh` runs the i-th of N shares. The results are merged by copying the directories together.
 
-Each repetition uses its own seed to shuffle the traces and the background traffic and to split them into training, validation and test sets. The seed also fixes the model initialization and the random choices of the defense, so every repetition is reproducible and all models in it see the same defended traces. Results are reported as the mean over the 10 repetitions with a 95% Student-t interval.
-
-Each job saves the predictions of every model on every trace (`forest.npz`, `transformer.npz`, `fold.npz`, `cnn.npz`), the test labels and a `result.json` with the metrics, so any metric can be recomputed without training again. The fields of the prediction files are defined in `fold/predictions.py`.
+Each job saves the predictions of every model on every trace, so any metric can be recomputed without training again.
 
 ### Running one experiment
 
@@ -59,25 +57,21 @@ python run_experiment.py --model fold        --experiment-id 1 --out-dir results
 python run_experiment.py --model evaluate    --experiment-id 1 --out-dir results/cw
 ```
 
-The forest must run first, because FOLD is trained on its out-of-fold probabilities and, in the open world, the forest also selects the background traces used by the other models. `--defense-padding`, `--defense-dummy` and `--defense-fragmentation` set the per-packet probability of each countermeasure, `--open-world` with `--background-ratio` adds background traffic, and `--n1-head` replaces FOLD's two heads with a single softmax over N+1 classes. `--help` lists all the options.
+The forest must run first, because FOLD is trained on its predictions. `--defense-padding`, `--defense-dummy` and `--defense-fragmentation` set the per-packet probability of each countermeasure, `--open-world` with `--background-ratio` adds background traffic, and `--help` lists all the options.
 
 ## Models
 
 | Model | Description |
 |---|---|
-| `fold` | the attack: a Transformer encoder combined with the random forest, with two output heads |
+| `fold` | the attack: a Transformer encoder combined with the random forest |
 | `transformer` | the sequential branch alone |
 | `forest` | the order-independent branch alone |
 | `cnn` | the convolutional baseline from the conference version of this work |
-| `df` | Deep Fingerprinting (Sirinam et al., CCS 2018), adapted to ODoH |
-
-Deep Fingerprinting keeps its published architecture and optimizer, with two changes due to trace length: an ODoH page load has from tens to a few hundred packets, against the 5,000 Tor cells the model was designed for. Pooling uses window 2 and stride 2 instead of 8 and 4, and the classifier averages over positions instead of flattening them. `fold/models/df.py` explains both.
+| `df` | Deep Fingerprinting (Sirinam et al., CCS 2018), adapted to the shorter ODoH traces |
 
 ## Background traffic
 
-The open-world experiments need traffic from websites outside the monitored set. This traffic is synthetic: a Gaussian copula is fitted on the statistics of the real traces and sampled to generate new websites. Real traces are used only to fit the generator and never appear in the background pool. Background traffic that is statistically close to the real one is the hardest case for the attack.
-
-`make_background.py` builds the pool once and records its parameters in the header of the CSV file. The default parameters and seeds are the ones used for the results in the paper, so the pool is the same as long as the SDV version is the same.
+The open-world experiments need traffic from websites outside the monitored set. This traffic is synthetic, generated by a Gaussian copula fitted on the statistics of the real traces. `make_background.py` builds it once, with the parameters and seeds used in the paper, and the result is the same as long as the SDV version is the same.
 
 ## Citing
 
