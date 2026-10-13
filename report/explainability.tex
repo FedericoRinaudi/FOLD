@@ -12,7 +12,7 @@
 \usepackage{subcaption}
 \usepackage[section]{placeins}
 \usepackage[hidelinks]{hyperref}
-\IfFileExists{../analysis/defense_metrics.csv}{\graphicspath{{../}}}{\graphicspath{{./}}}
+\IfFileExists{../analysis/cross_run/figures_fast/baseline/baseline_fold.png}{\graphicspath{{../}}}{\graphicspath{{./}}}
 \captionsetup{font=small,labelfont=bf}
 \setlength{\emergencystretch}{2em}
 \setlength{\tabcolsep}{5pt}
@@ -25,11 +25,13 @@
 \maketitle
 
 \section{Introduzione}
-Il lavoro riguarda l'aggiunta di explainability a FOLD. L'obiettivo è capire quali informazioni contribuiscono alle sue predizioni e rendere più leggibile il comportamento del modello sulle tracce analizzate.
+Il lavoro riguarda l'aggiunta di explainability a FOLD. L'obiettivo è capire quali informazioni contribuiscono alle sue predizioni e rendere più leggibile il comportamento del modello sulle tracce ODoH analizzate. Come primo passo ho analizzato la Random Forest con TreeSHAP; ho poi implementato una spiegazione end-to-end che parte dalla traccia e ricalcola tutti gli input prima di valutare l'output finale di FOLD.
 
-Come primo passo ho analizzato la Random Forest con TreeSHAP, per osservare il contributo delle singole feature alla probabilità del sito target. Questa analisi permette di capire la previsione della RF, ma non spiega ancora la decisione finale di FOLD. Per questo ho poi implementato una spiegazione end-to-end, che parte dalla traccia e ricalcola tutti gli input prima di valutare l'output finale.
+Il report racconta due fasi successive del lavoro. Nella prima ho implementato e validato la pipeline attraverso uno studio dettagliato su Instagram, utilizzando una singola repetition per configurazione. Ho analizzato baseline, defense e open-world, distinguendo le spiegazioni multiclass da quelle binary. Questa fase ha permesso di verificare concretamente il comportamento delle spiegazioni RF e FOLD e di leggere i contributi insieme alle performance.
 
-Infine ho esteso l'analisi alle configurazioni con defense e allo scenario open-world con background traffic. Ho affiancato le spiegazioni alle metriche di classificazione, per osservare sia le performance complessive sia i contributi ottenuti sui campioni selezionati.
+Le Sezioni 2--6 descrivono questo studio iniziale: i campioni, le reference, i risultati numerici e le figure si riferiscono al relativo esperimento single-run. Successivamente ho esteso l'analisi a più siti e cinque training run per configurazione, per verificare quanto le osservazioni sul caso Instagram fossero diffuse e quanto dipendessero dai campioni e dai modelli osservati. La Sezione~\ref{sec:crossrun-extension} presenta questa seconda campagna, con target multiclass dinamico, aggregazione per sito, CI al 95\%, dominant-group analysis, heatmap e delta paired rispetto alla baseline. Il protocollo FAST riduce il budget della sola explainability, mantenendo completi i training.
+
+Le due fasi rispondono quindi a domande complementari: lo studio iniziale approfondisce un caso controllato, mentre l'estensione verifica gli stessi strumenti su un insieme più ampio di siti e configurazioni. Le tabelle originali sono conservate in appendice e affiancate da quelle cross-run.
 
 \section{Metodologia di explainability}
 \subsection{TreeSHAP sulla Random Forest}
@@ -349,7 +351,324 @@ Nel cohort background i contributi medi di tutti i gruppi sono negativi: diminui
 \label{fig:open-binary}
 \end{figure}
 
+\section{Estensione cross-run e analisi multi-sito}
+\label{sec:crossrun-extension}
+Lo studio iniziale ha approfondito il cohort Instagram su una singola repetition. Per verificare se i risultati fossero confermati su più siti e modelli addestrati in repetition diverse, ho esteso l'analisi a una campagna cross-run, introducendo aggregazione multi-sito, intervalli di confidenza e confronti con la baseline.
+
+\subsection{Disegno sperimentale cross-run}
+Il dataset monitored, \texttt{data/odoh\_traces.csv}, contiene 100 siti, 2.834 tracce di caricamento di pagina e 54.155 righe di risoluzioni ODoH. Ogni riga rappresenta una risoluzione. Lo split assegna il 65\% delle tracce al training, il 10\% alla validazione e il 25\% al test: 1.842, 283 e 709 tracce monitored in ciascuna repetition. I cinque split registrati conservano queste numerosità, ma cambiano le tracce assegnate.
+
+La campagna comprende cinque run addestrate per configurazione, con experiment ID da 1 a 5: 26 configurazioni per 5 repetition, cioè 130 job. Gli scenari restano quelli della Tabella~\ref{tab:campaign} dello studio iniziale. Il padding modifica le dimensioni, dummy aggiunge record e fragmentation suddivide i payload che soddisfano le condizioni previste. L'intensità indica la probabilità di applicazione del meccanismo; combined applica tutti e tre alla stessa intensità. Le defense sono applicate a training, validazione e test, addestrando i modelli per ciascuna configurazione, senza background.
+
+Nell'open-world il background proviene da un insieme sintetico comune. Il rapporto indica la frazione prevista di background nel totale delle tracce; queste configurazioni non includono defense.
+
+
+Nel nuovo studio multiclass il target diventa dinamico: per ogni osservazione $x$ viene spiegata $P_{\mathrm{FOLD}}(y_x\mid x)$, dove $y_x$ è il suo vero sito, anche quando la predizione è errata. Per RF viene selezionata analogamente la probabilità della classe reale. Non viene quindi spiegata sempre Instagram né sempre la classe predetta. I pannelli Instagram della nuova campagna rimangono utili per confrontare un caso specifico con il primo studio, mentre il risultato globale riguarda tutti i siti del cohort pertinente.
+
+Le metriche mantengono il significato dello studio iniziale. Nei risultati cross-run il FPR di detection, identificato da \texttt{detection.fpr}, rimane distinto dal macro-FPR one-vs-rest presente nei CSV come \texttt{fpr}.
+
+\subsection{Dal protocollo completo al protocollo FAST}
+Il protocollo cross-run inizialmente progettato prevedeva più spiegazioni per sito e reference più numerose. Il costo grouped Shapley cresce perché ogni osservazione richiede tutte le 16 coalizioni G1--G4, valutate rispetto alle reference attraverso l'intera pipeline: \texttt{Encoder.forest()}, RF finale, \texttt{Encoder.sequence()} e FOLD. Moltiplicando questo lavoro per siti, osservazioni, reference, configurazioni e repetition, la campagna diventava poco praticabile.
+
+È stato quindi introdotto il protocollo FAST, che riduce soltanto osservazioni sottoposte a XAI e reference. Restano invariati modelli addestrati, cinque repetition, 26 configurazioni, split, seed del training, architettura, loss, preprocessing, defense, definizione G1--G4 e output spiegati. Si tratta di una riduzione del budget di explainability, non di un training abbreviato o di un modello semplificato.
+
+\subsection{Cohort e problema dei 92 siti}
+Le metriche di performance sono calcolate sui test set completi dei cinque modelli per configurazione. Le spiegazioni riguardano invece i sottoinsiemi held-out della Tabella~\ref{tab:crossrun-cohorts}. Ogni osservazione è identificata dalla traccia e dalla run alla quale è assegnata; appartiene al test di quella run. I record FAST fissano 300 osservazioni RF, tutte distinte, con tre osservazioni per ciascuno dei 100 siti. Lo stesso cohort RF viene mantenuto nelle diverse configurazioni.
+
+L'obiettivo iniziale era spiegare anche FOLD su tutti i 100 siti. Tuttavia G1--G4 richiede almeno quattro risoluzioni ODoH complete: nell'unione dei test delle cinque repetition soltanto 92 siti dispongono di almeno una traccia eleggibile. Il cohort grouped FOLD contiene quindi 266 osservazioni e 266 tracce distinte, da una a tre per sito, mantenute nelle configurazioni baseline, defense e open-world multiclass e nel cohort binary monitored. Le reference grouped rispettano lo stesso vincolo strutturale.
+
+La scelta conserva il significato dei quattro gruppi: non vengono create tracce eleggibili artificialmente, introdotti gruppi adattivi o ridefiniti G1--G4 come quartili di pacchetti per raggiungere 100 siti. Gli otto siti senza dati grouped restano unavailable nelle heatmap, rappresentati in grigio; un valore mancante non viene imputato come attribuzione nulla. RF e valutazione predittiva continuano a includere tutti i 100 siti.
+
+La copertura è non uniforme: 87 siti FOLD sono presenti in tre explanation-run e cinque in una sola, ossia \texttt{adobe.com}, \texttt{bing.com}, \texttt{facebook.com}, \texttt{google.com} e \texttt{indeed.com}. Anche ciascun sito RF compare in tre explanation-run. Le cinque training run sono rappresentate globalmente, ma ogni sito non ha cinque spiegazioni su modelli diversi. Le numerosità qui riportate derivano dai record effettivi e da \texttt{coverage.csv}, non dalle quote del protocollo completo originario.
+
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{Cohort FAST per configurazione. Le osservazioni sommano i sample-run assegnati attraverso le cinque run; le reference sono selezionate dal training della run.}
+\label{tab:crossrun-cohorts}
+\begin{tabular}{lrrrr}
+\toprule
+Analisi & Osservazioni & Tracce distinte & Siti & Reference \\
+\midrule
+RF multiclass & 300 & 300 & 100 & 32 \\
+FOLD multiclass & 266 & 266 & 92 & 4 \\
+FOLD binary monitored & 266 & 266 & 92 & 2 + 2 miste \\
+FOLD binary background & 266 & 263--265 & -- & 2 + 2 miste \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Nella binary, per ogni rapporto vengono spiegate 266 osservazioni background oltre alle 266 monitored. Le tracce background distinte sono rispettivamente 264, 265, 263, 264 e 263 ai rapporti 0.30--0.70: alcune ricompaiono in run diverse. Il background è aggregato come un'unica popolazione, non come 100 siti. La selezione cerca campioni test comuni ai rapporti entro ciascuna run quando l'intersezione è disponibile; altrimenti usa il test del rapporto. Le reference binary sono selezionate per essere comuni ai rapporti entro la run. Non viene assunto un cohort background identico tra tutte le run o un confronto paired tra rapporti diversi.
+
+\subsection{Aggregazione e intervalli di confidenza}
+Una media diretta di tutti i record darebbe più peso ai siti con più osservazioni. Per le XAI vengono invece mediate prima le osservazioni nello stesso site/run, poi le repetition disponibili per quel sito, infine i siti con peso uguale. Per il gruppo $g$, indicando con $R_s$ le run osservate del sito $s$ e con $X_{sr}$ il relativo insieme di campioni, l'estimand principale è
+\begin{equation}
+ A_g=\frac{1}{|\mathcal S|}\sum_{s\in\mathcal S}\frac{1}{|R_s|}\sum_{r\in R_s}\frac{1}{|X_{sr}|}\sum_{x\in X_{sr}}|\phi_g^{(r)}(x)|.
+ \label{eq:crossrun-aggregation}
+\end{equation}
+Lo stesso ordine di aggregazione viene usato per probabilità e contributi con segno. Il termine all-sites nei grafici indica tutti i siti del cohort pertinente: 100 per RF, 92 per grouped FOLD. Le magnitudini RF e FOLD non sono direttamente confrontabili, perché cambiano modello, unità di attribuzione, reference e cohort.
+
+Le sole medie non mostrano quanto una stima sia stabile rispetto ai campioni osservati. Per le XAI sono quindi riportati CI al 95\% mediante percentile bootstrap, con 10.000 draw e seed 20261008. Si ricampionano i siti e le osservazioni all'interno delle celle site/run disponibili; per ciascun sito si mantiene la media delle sue run osservate. I modelli addestrati rimangono fissi e le celle mancanti non vengono sintetizzate. Nel pannello Instagram manca il livello di ricampionamento dei siti; il background binary è trattato come un'unica popolazione.
+
+Il CI XAI quantifica così l'incertezza dell'aggregazione condizionata ai modelli osservati, non la variabilità di nuovi training indipendenti. Inoltre un CI al 95\% della media non significa che contenga il 95\% dei singoli valori SHAP. Con poche osservazioni per sito e spesso una sola per cella, il bootstrap entro cella può essere degenere: intervalli stretti non certificano stabilità rispetto a tracce non osservate.
+
+Per le performance si calcola invece la media dei cinque valori ottenuti sui test set completi e il CI percentile al 95\% ricampionando i cinque valori run-level, sempre con 10.000 draw e lo stesso seed. Questi intervalli descrivono la variabilità tra le run disponibili e vanno distinti dall'incertezza XAI.
+
+\subsection{Dominant group, heatmap e delta paired}
+\subsubsection{Gruppo dominante e heatmap}
+Una magnitudine globale elevata potrebbe essere guidata da pochi siti. Per verificarne la diffusione viene identificato, per ciascun sito, il gruppo con il maggiore mean $|\phi|$ dopo la media delle run disponibili. Ogni sito viene contato una sola volta: il risultato non è una votazione dei vincitori delle singole run. La distribuzione dei gruppi dominanti è una statistica descrittiva; i grafici disponibili non riportano CI.
+
+La heatmap conserva invece i quattro valori di ciascun sito. Permette di osservare eterogeneità, dominanze diverse e variazioni site-specific che la media globale comprime. Le righe seguono un ordine deterministico dei 100 siti, le colonne sono G1--G4 e il colore rappresenta il mean $|\phi|$ dopo l'aggregazione entro sito. Gli otto siti senza tracce eleggibili sono grigi. Le heatmap delle configurazioni usano una scala cromatica comune, così da rendere confrontabili le magnitudini.
+
+\subsubsection{Delta paired rispetto alla baseline}
+Il valore assoluto in una configurazione non indica direttamente quanto il comportamento sia cambiato rispetto al modello senza defense e background. Per questo viene calcolato il delta della formula~\ref{eq:crossrun-delta}:
+\begin{equation}
+ \Delta_g=A_g^{\mathrm{configurazione}}-A_g^{\mathrm{baseline}}.
+ \label{eq:crossrun-delta}
+\end{equation}
+Un delta negativo indica una minore magnitudine del contributo del gruppo, uno positivo una maggiore magnitudine e zero nessuna variazione dell'estimand. Non si tratta di una quota normalizzata di importanza né di una differenza tra contributi con segno.
+
+Il confronto è paired sulle stesse osservazioni: run, sito, sample ID, modello, cohort, output e dimensione devono corrispondere esattamente. Si calcola prima $|\phi_g^{\mathrm{configurazione}}(x)|-|\phi_g^{\mathrm{baseline}}(x)|$, poi si applica l'aggregazione della formula~\ref{eq:crossrun-aggregation} e il bootstrap alle differenze paired. Non si sottraggono due CI marginali indipendenti. \texttt{pairing.csv} conferma il matching completo per tutte le 25 configurazioni nonbaseline, sia RF sia FOLD multiclass. I delta discussi riguardano l'output multiclass; non esiste un confronto binary con una baseline closed-world.
+
+\subsection{Baseline multi-sito}
+\subsubsection{Performance}
+Nella baseline entrambi i modelli raggiungono performance elevate sui test completi. Le medie delle cinque training run e i CI sono riportati nella Tabella~\ref{tab:crossrun-baseline-performance}. FOLD presenta medie leggermente maggiori di RF, ma gli intervalli marginali si sovrappongono: il confronto descrittivo non costituisce un test di superiorità statistica.
+
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{Baseline closed-world: media e CI al 95\% dei cinque valori run-level, calcolati sui test set completi.}
+\label{tab:crossrun-baseline-performance}
+\begin{tabular}{lll}
+\toprule
+Modello & Accuracy [CI 95\%] & Macro-F1 [CI 95\%] \\
+\midrule
+RF & 0.9831 [0.9791, 0.9865] & 0.9826 [0.9794, 0.9860] \\
+FOLD & 0.9867 [0.9831, 0.9898] & 0.9860 [0.9835, 0.9885] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{TreeSHAP RF}
+La Figura~\ref{fig:crossrun-baseline-rf} mostra le feature principali per la probabilità del sito reale. Nel pannello all-sites, relativo ai 100 siti, le tre magnitudini medie maggiori sono la deviazione standard delle dimensioni dei pacchetti (0.0391, CI [0.0364, 0.0418]), la dimensione media (0.0363, CI [0.0329, 0.0399]) e la dimensione media delle risposte del target (0.0339, CI [0.0307, 0.0373]). Le statistiche dimensionali occupano quindi posizioni rilevanti anche nel cohort multi-sito; le feature mostrate sono le prime 15 per ciascun pannello, senza una barra che sommi le rimanenti.
+
+Le barre rappresentano mean $|\mathrm{SHAP}|$ in unità di probabilità, mentre le barre di errore mostrano il CI della media aggregata. Il pannello Instagram è un sottoinsieme della nuova campagna, utile a leggere un caso specifico; non sostituisce il risultato primario su 100 siti.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/baseline/baseline_rf.png}
+\caption{TreeSHAP RF nella baseline FAST: prime 15 feature ordinate separatamente per Instagram (sinistra) e per tutti i 100 siti (destra, risultato primario). Target dinamico pari al sito reale; cohort globale di 300 tracce distinte e 32 reference di training per run. Barre: mean $|\mathrm{SHAP}|$; errori: CI al 95\% condizionati ai modelli osservati.}
+\label{fig:crossrun-baseline-rf}
+\end{figure}
+
+\subsubsection{Grouped Shapley FOLD}
+Nello studio Instagram della Figura~\ref{fig:baseline-fold} G1 aveva già la maggiore magnitudine media. Nel cohort primario di 92 siti, G1 presenta nettamente la maggiore magnitudine media: 0.3379, rispetto a 0.1793 per G2, 0.1520 per G3 e 0.1550 per G4. La Tabella~\ref{tab:crossrun-baseline-fold} riporta i CI e la probabilità media del sito reale, pari a 0.8330. La Figura~\ref{fig:crossrun-baseline-fold} affianca il sottoinsieme Instagram al risultato all-sites; tutte le statistiche principali si riferiscono alle 266 tracce eleggibili, con peso uguale ai siti.
+
+\begin{table}[htbp]
+\centering\small
+\caption{Baseline grouped FOLD: magnitudini G1--G4 e probabilità del sito reale, aggregate sui 92 siti eleggibili. CI al 95\% condizionati ai modelli osservati.}
+\label{tab:crossrun-baseline-fold}
+\begin{tabular}{lrl}
+\toprule
+Quantità & Media & CI 95\% \\
+\midrule
+G1 & 0.3379 & [0.3163, 0.3583] \\
+G2 & 0.1793 & [0.1675, 0.1906] \\
+G3 & 0.1520 & [0.1422, 0.1615] \\
+G4 & 0.1550 & [0.1449, 0.1650] \\
+$P(\mathrm{sito\ reale})$ & 0.8330 & [0.7948, 0.8632] \\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/baseline/baseline_fold.png}
+\caption{Grouped Shapley FOLD nella baseline FAST: Instagram a sinistra come esempio secondario, all-sites a destra come risultato primario sui 92 siti eleggibili. Il cohort comprende 266 tracce distinte, quattro gruppi di risoluzioni e quattro reference di training per run. Barre: mean $|\phi_g|$; errori: CI al 95\% della media aggregata.}
+\label{fig:crossrun-baseline-fold}
+\end{figure}
+
+\subsubsection{Diffusione della dominanza di G1}
+La distribuzione nella Figura~\ref{fig:crossrun-baseline-dominant} mostra che G1 è dominante in 84 dei 92 siti (91.3\%); G2 in cinque, G3 in due e G4 in uno. La maggiore magnitudine globale di G1 è quindi un comportamento diffuso nel cohort, non soltanto una media guidata da pochi siti. La heatmap della Figura~\ref{fig:crossrun-baseline-heatmap} mantiene visibili le differenze tra siti e le otto righe unavailable. Questi risultati descrivono il modello rispetto alle reference scelte e non dimostrano un ruolo causale della parte iniziale del traffico.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.70\linewidth]{analysis/cross_run/figures_fast/baseline/dominant_baseline.png}
+\caption{Gruppo dominante nella baseline: argmax del mean $|\phi|$ di ciascun sito dopo la media delle run disponibili. Conteggi G1--G4: 84, 5, 2 e 1 su 92 siti; ogni sito è contato una sola volta. Le percentuali sono statistiche descrittive, senza CI.}
+\label{fig:crossrun-baseline-dominant}
+\end{figure}
+\begin{figure}[htbp]
+\centering
+\includegraphics[height=0.83\textheight,width=\linewidth,keepaspectratio]{analysis/cross_run/figures_fast/baseline/heatmap_baseline.png}
+\caption{Heatmap baseline FOLD: righe = 100 siti in ordine deterministico; colonne = G1--G4; colore = mean $|\phi|$ dopo la media delle run disponibili per sito. Le 92 righe misurate costituiscono il cohort primario; le otto righe grigie indicano nessuna traccia held-out con almeno quattro risoluzioni complete, non SHAP uguale a zero. La scala cromatica è comune alle configurazioni.}
+\label{fig:crossrun-baseline-heatmap}
+\end{figure}
+\subsection{Risultati cross-run con defense}
+\subsubsection{Performance sui cinque run}
+Le defense producono effetti diversi sulle performance complete e sulle spiegazioni del cohort FAST. Le Figure~\ref{fig:crossrun-performance-accuracy} e~\ref{fig:crossrun-performance-f1} riportano le medie e i CI di FOLD per tutte le configurazioni, includendo anche baseline e open-world. Le Tabelle~\ref{tab:crossrun-defense-performance-rf} e~\ref{tab:crossrun-defense-performance-fold} in appendice riportano baseline e tutte le 20 defense per entrambi i modelli.
+
+Il padding riduce progressivamente l'accuracy media FOLD da 0.9811 a intensità 0.10 fino a 0.5927 a 1.00 (CI [0.5814, 0.6076]); a quest'ultima intensità la macro-F1 è 0.5746 (CI [0.5652, 0.5892]). Dummy mantiene accuracy tra 0.9808 e 0.9865. Fragmentation presenta una degradazione più moderata: l'accuracy è 0.9379 a 0.70 e 0.9439 a 1.00. Combined raggiunge 0.5441 a 0.70 (CI [0.5168, 0.5715]) e risale a 0.7365 a 1.00 (CI [0.7278, 0.7467]). Quest'ultimo recupero è presente nella media cross-run; non va interpretato come un andamento generale monotono dell'efficacia della defense.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/performance/fold/performance_fold_accuracy.png}
+\caption{Accuracy FOLD sui test set completi: media di cinque training run per ciascuna delle 26 configurazioni e CI percentile al 95\% ottenuto ricampionando i valori run-level. La copertura XAI di 92 siti non restringe la valutazione predittiva.}
+\label{fig:crossrun-performance-accuracy}
+\end{figure}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/performance/fold/performance_fold_macro_f1.png}
+\caption{Macro-F1 FOLD delle classi monitored: media e CI al 95\% sui cinque valori run-level per configurazione. Nell'open-world il background contribuisce come negativo ma non come classe nella media.}
+\label{fig:crossrun-performance-f1}
+\end{figure}
+
+\subsubsection{Attribuzioni, probabilità e delta}
+Le Figure~\ref{fig:crossrun-defense-abs} e~\ref{fig:crossrun-defense-delta} mostrano magnitudini e delta paired dei gruppi per tutte le famiglie. Il pannello all-sites, a destra, rappresenta i 92 siti eleggibili; quello Instagram resta un esempio secondario. La Tabella~\ref{tab:crossrun-defense-xai} in appendice riporta le medie dei gruppi e la true-site probability. Quest'ultima riguarda il sottoinsieme spiegato e non coincide con l'accuracy sull'intero test.
+
+\paragraph{Padding.}
+G1 mantiene la magnitudine media maggiore, ma diminuisce da 0.3379 nella baseline a 0.1446 a intensità 1.00; G2--G4 valgono 0.1131, 0.1219 e 0.1129. Alle intensità intermedie G3 e G4 possono aumentare rispetto alla baseline, mentre a 1.00 tutti i delta sono negativi. Per G1 il delta è $-0.1934$ (CI [$-0.2120$, $-0.1746$]). La probabilità media del sito reale passa da 0.8330 a 0.4906 (CI [0.4287, 0.5530]); a 0.10 è invece 0.8465. La riduzione delle performance si accompagna quindi a minori magnitudini alle intensità più alte, ma non a un calo uniforme di tutti i gruppi a ogni intensità.
+
+\paragraph{Dummy.}
+Le attribuzioni rimangono vicine alla baseline e G1 conserva la maggiore magnitudine media a tutte le intensità. A 1.00 G1 vale 0.3054, con delta $-0.0325$ (CI [$-0.0472$, $-0.0171$]); G2--G4 valgono 0.1844, 0.1704 e 0.1720. La probabilità media del sito reale varia tra 0.8267 e 0.8415. Le performance elevate convivono quindi con piccoli cambiamenti nella distribuzione dei contributi, senza un andamento monotono della probabilità.
+
+\paragraph{Fragmentation.}
+G1 resta il gruppo con la magnitudine globale maggiore, ma alle intensità intermedie si riduce la distanza dagli altri gruppi. A 0.50 G1 scende a 0.2643, mentre G3 e G4 salgono a 0.1802 e 0.1827; i loro delta sono 0.0282 e 0.0277, con CI interamente positivi. A 1.00 G1 risale a 0.3117 e G2--G4 valgono 0.1605, 0.1573 e 0.1577. La probabilità media del sito reale è 0.7953 a 1.00, rispetto a 0.8330 nella baseline. La degradazione delle performance non corrisponde quindi a una diminuzione proporzionale di tutti i contributi.
+
+\paragraph{Combined.}
+Alle intensità basse e intermedie la distribuzione cambia: a 0.30 G1 e G2 hanno delta negativi, mentre G3 e G4 positivi. G1 mantiene comunque la maggiore magnitudine globale alle cinque intensità. A 0.70 tutti i gruppi sono sotto la baseline: G1 vale 0.1318 e il suo delta è $-0.2061$ (CI [$-0.2268$, $-0.1849$]); la probabilità del sito reale è 0.4336. A 1.00 probabilità e attribuzioni recuperano, rispettivamente a 0.6248 e 0.2071 per G1, ma rimangono inferiori alla baseline. Il delta rende espliciti sia la redistribuzione iniziale sia la contrazione alle intensità maggiori.
+
+Per ogni configurazione defense sono disponibili nel repository anche dominant-group chart e heatmap site$\times$group; i grafici di probabilità completano quelli di magnitudine e delta. Questo insieme supplementare permette di verificare se le variazioni globali si concentrino su siti specifici, senza inserire tutte le figure nel corpo del report.
+
+\begin{figure}[p]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/padding/padding_abs.png}
+\caption{Padding.}
+\end{subfigure}\hfill
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/dummy/dummy_abs.png}
+\caption{Dummy.}
+\end{subfigure}
+\par\medskip
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/fragmentation/fragmentation_abs.png}
+\caption{Fragmentation.}
+\end{subfigure}\hfill
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/combined/combined_abs.png}
+\caption{Combined.}
+\end{subfigure}
+\par\medskip
+\caption{Magnitudini grouped FOLD nelle quattro defense: mean $|\phi_g|$ in funzione dell'intensità, con CI XAI al 95\% (bande). In ciascun pannello Instagram è a sinistra, il cohort primario di 92 siti e 266 osservazioni a destra. Le scale dei pannelli possono differire; la baseline è riportata separatamente nella Figura~\ref{fig:crossrun-baseline-fold}.}
+\label{fig:crossrun-defense-abs}
+\end{figure}
+\begin{figure}[p]
+\centering
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/padding/padding_delta_abs.png}
+\caption{Padding.}
+\end{subfigure}\hfill
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/dummy/dummy_delta_abs.png}
+\caption{Dummy.}
+\end{subfigure}
+\par\medskip
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/fragmentation/fragmentation_delta_abs.png}
+\caption{Fragmentation.}
+\end{subfigure}\hfill
+\begin{subfigure}{0.49\linewidth}
+\includegraphics[width=\linewidth]{analysis/cross_run/figures_fast/defenses/combined/combined_delta_abs.png}
+\caption{Combined.}
+\end{subfigure}
+\par\medskip
+\caption{Delta paired di mean $|\phi_g|$ rispetto alla baseline closed-world per le quattro defense; bande = CI al 95\% delle differenze paired. In ciascun pannello Instagram è a sinistra e i 92 siti eleggibili a destra. La linea zero indica nessuna variazione della magnitudine aggregata, non un contributo SHAP nullo.}
+\label{fig:crossrun-defense-delta}
+\end{figure}
+\subsection{Risultati cross-run open-world}
+\subsubsection{Performance e detection}
+L'open-world richiede di distinguere identificazione del sito e riconoscimento monitored/background. La Tabella~\ref{tab:crossrun-open-performance} riporta accuracy e macro-F1 FOLD ai cinque rapporti; i risultati completi di RF e FOLD sono nella Tabella~\ref{tab:crossrun-open-performance-complete} in appendice. L'accuracy media FOLD aumenta da 0.9704 a 0.9850, mentre la macro-F1 rimane tra 0.9660 e 0.9724. L'accuracy include il background e cambia anche la composizione del test: il suo aumento non dimostra un miglioramento uniforme dell'identificazione dei siti monitored.
+
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{Open-world FOLD: media e CI al 95\% sui cinque test completi per rapporto di background.}
+\label{tab:crossrun-open-performance}
+\begin{tabular}{lll}
+\toprule
+Background & Accuracy [CI 95\%] & Macro-F1 [CI 95\%] \\
+\midrule
+0.30 & 0.9704 [0.9670, 0.9737] & 0.9708 [0.9682, 0.9742] \\
+0.40 & 0.9758 [0.9719, 0.9797] & 0.9724 [0.9677, 0.9771] \\
+0.50 & 0.9787 [0.9764, 0.9810] & 0.9703 [0.9666, 0.9739] \\
+0.60 & 0.9834 [0.9806, 0.9862] & 0.9721 [0.9674, 0.9766] \\
+0.70 & 0.9850 [0.9833, 0.9866] & 0.9660 [0.9618, 0.9696] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Nelle medie osservate FOLD ha accuracy, TPR e AUC maggiori di RF a tutti i rapporti. La macro-F1 è maggiore a 0.40--0.70 e inferiore a 0.30. Il FPR di detection FOLD è maggiore a 0.30 e 0.40, ma minore a 0.50--0.70. A 0.30 il TPR è 0.9893 (CI [0.9834, 0.9955]) e il FPR 0.0447 (CI [0.0342, 0.0533]); a 0.70 sono 0.9867 e 0.0096. Questi confronti sono descrittivi e non test di superiorità tra modelli. Le Figure~\ref{fig:crossrun-open-fpr} e~\ref{fig:crossrun-open-auc} mostrano detection FPR e AUC con la loro variabilità cross-run; le Tabelle~\ref{tab:crossrun-open-detection-rf} e~\ref{tab:crossrun-open-detection-fold} riportano anche i TPR.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/performance/fold/performance_fold_detection.fpr.png}
+\caption{FPR di detection FOLD nei cinque rapporti open-world: quota di background classificato monitored con soglia $>0.5$. Punti e barre rappresentano media e CI al 95\% sui cinque valori run-level, calcolati sui test completi.}
+\label{fig:crossrun-open-fpr}
+\end{figure}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/performance/fold/performance_fold_detection.auc.png}
+\caption{ROC AUC FOLD per la detection monitored/background nei cinque rapporti: media e CI al 95\% sui cinque training run. La AUC riassume tutte le soglie e riguarda un problema distinto dall'identificazione del sito.}
+\label{fig:crossrun-open-auc}
+\end{figure}
+
+\subsubsection{Spiegazioni multiclass}
+Le spiegazioni multiclass riguardano $P_{\mathrm{FOLD}}(\mathrm{sito\ reale})$, non sempre Instagram, sulle stesse 266 tracce dei 92 siti eleggibili. G1 mantiene la maggiore magnitudine globale a tutti i rapporti: i valori sono compresi tra 0.2796 e 0.2962. G2--G4 restano più bassi, con differenze che non seguono tutte un andamento monotono (Figura~\ref{fig:crossrun-open-multi}; Tabella~\ref{tab:crossrun-open-multi-xai} in appendice).
+
+Il delta rispetto alla baseline è negativo per G1 a tutti i rapporti, da $-0.0417$ a $-0.0583$, con CI interamente sotto zero. Gli altri gruppi cambiano meno: per esempio G4 aumenta a 0.30 e 0.50, mentre a 0.70 il suo CI del delta comprende zero (Figura~\ref{fig:crossrun-open-delta}). La probabilità media del sito reale diminuisce da 0.8000 a 0.7554 tra 0.30 e 0.70, rispetto a 0.8330 nella baseline (Figura~\ref{fig:crossrun-open-probability}). Questo comportamento del cohort spiegato va letto separatamente dall'accuracy complessiva, che include una quota crescente di background.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/openworld/openworld_abs.png}
+\caption{Open-world multiclass: mean $|\phi_g|$ per $P(\mathrm{sito\ reale})$ ai cinque rapporti di background, con CI XAI al 95\%. Instagram a sinistra; cohort primario di 92 siti e 266 tracce a destra. Quattro reference monitored di training per run.}
+\label{fig:crossrun-open-multi}
+\end{figure}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/openworld/openworld_delta_abs.png}
+\caption{Delta multiclass paired rispetto alla baseline closed-world, sulle stesse osservazioni e dimensioni. Bande: CI al 95\% delle differenze di magnitudine. Instagram a sinistra e 92 siti eleggibili a destra; la linea zero indica nessuna variazione aggregata.}
+\label{fig:crossrun-open-delta}
+\end{figure}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/openworld/openworld_probability.png}
+\caption{Probabilità media del sito reale nel cohort multiclass open-world, con CI XAI al 95\%. Instagram a sinistra e 92 siti eleggibili a destra. La media è calcolata entro site/run e poi con peso uguale ai siti; non è l'accuracy sul test completo.}
+\label{fig:crossrun-open-probability}
+\end{figure}
+
+\subsubsection{Spiegazioni binary}
+La binary spiega $P(\mathrm{monitored})$ sui due cohort, usando due reference monitored e due background. La Figura~\ref{fig:crossrun-open-binary-abs} descrive le magnitudini; la Figura~\ref{fig:crossrun-open-binary-signed} ne distingue la direzione. Il valore assoluto evita la cancellazione tra contributi opposti, mentre il segno mostra se un gruppo aumenta o diminuisce la probabilità monitored rispetto al riferimento.
+
+Nel primo cohort monitored, centrato su Instagram, G2 aveva la maggiore magnitudine binary (Figura~\ref{fig:open-binary}). Nel nuovo cohort monitored multi-sito è invece G1 a prevalere: il passaggio cambia siti, campioni, reference e modelli aggregati, quindi questa differenza descrive i due disegni sperimentali e non invalida il primo risultato. Nel cohort monitored i quattro contributi medi con segno sono positivi a tutti i rapporti, e G1 ha la maggiore magnitudine media, compresa tra 0.2746 e 0.3061. La probabilità media monitored è compresa tra 0.9823 e 0.9993. Nel cohort background i quattro contributi medi sono negativi e G1 ha ancora la maggiore magnitudine, tra 0.2428 e 0.3187; la probabilità monitored è compresa tra 0.0067 e 0.0332. I segni medi opposti rendono leggibile la distinzione tra le popolazioni, ma non implicano che ogni singola attribuzione abbia lo stesso segno. Le Tabelle~\ref{tab:crossrun-open-binary-abs} e~\ref{tab:crossrun-open-binary-signed} in appendice riportano probabilità, magnitudini e medie con segno.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/openworld/openworld_binary_abs.png}
+\caption{Binary FOLD: mean $|\phi_g|$ per $P(\mathrm{monitored})$ ai cinque rapporti, con CI XAI al 95\%. A sinistra 266 osservazioni monitored sui 92 siti eleggibili; a destra 266 osservazioni background per rapporto, aggregate come un'unica popolazione. Reference miste: due monitored e due background per run.}
+\label{fig:crossrun-open-binary-abs}
+\end{figure}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{analysis/cross_run/figures_fast/openworld/openworld_binary_signed.png}
+\caption{Binary FOLD: contributi medi con segno a $P(\mathrm{monitored})$, con CI XAI al 95\%. Cohort monitored a sinistra e background a destra. Valori positivi aumentano la probabilità monitored rispetto alle reference, valori negativi la diminuiscono; il segno della media non vincola ogni contributo individuale.}
+\label{fig:crossrun-open-binary-signed}
+\end{figure}
+\subsection{Sintesi e confronto con lo studio iniziale}
+La prima fase aveva individuato G1 come gruppo di maggiore mean $|\phi|$ nella baseline Instagram. La seconda mostra che questa osservazione non è limitata a quel cohort: G1 ha la maggiore magnitudine globale ed è dominante in 84 dei 92 siti eleggibili. Anche le statistiche dimensionali principali della RF restano rilevanti nel risultato su 100 siti. Heatmap e dominant-group analysis rendono visibile la diffusione di questi comportamenti, insieme alle differenze tra siti.
+
+Le defense conservano alcune tendenze generali: padding e combined degradano maggiormente le performance, dummy ha un impatto minore e fragmentation più moderato. Il recupero combined a intensità 1.00 appare sia nella run iniziale sia nella media delle cinque run. Le attribuzioni, invece, non devono coincidere numericamente: nella seconda fase la probabilità spiegata è quella del sito reale di ciascuna osservazione e cambiano cohort e reference. I delta paired quantificano le variazioni entro questo nuovo disegno.
+
+Nell'open-world multiclass e nella binary monitored, G1 ha la maggiore magnitudine globale ai rapporti analizzati; nel piccolo cohort originale G2 poteva superare G1 e prevaleva nella binary monitored. La differenza evidenzia perché un caso locale e un'aggregazione multi-sito siano complementari. Restano coerenti le direzioni medie binary, positive per monitored e negative per background, senza imporre il segno di ogni attribuzione individuale. L'estensione amplia quindi l'evidenza entro i suoi limiti di copertura e campionamento, senza trasformarla in una conclusione causale o in una garanzia su siti non osservati.
+
 \section{Limitazioni}
+Le prime limitazioni riguardano lo studio iniziale presentato nelle Sezioni 3--6.
+
 Per ogni configurazione è stata eseguita una sola ripetizione.I risultati non permettono quindi di valutare quanto le performance e le spiegazioni cambino ripetendo l'addestramento.
 
 Le spiegazioni grouped dipendono dalle reference scelte. Con reference diverse potrebbero cambiare il riferimento di confronto e i contributi dei gruppi.
@@ -358,12 +677,20 @@ L'analisi multiclass dettagliata riguarda il cohort Instagram selezionato. Le os
 
 Nell'analisi binary i campioni background non sono gli stessi in tutti i rapporti. Le differenze osservate risentono quindi anche dei diversi insiemi di tracce spiegate.
 
+La campagna cross-run usa il protocollo FAST, con meno osservazioni e reference rispetto al protocollo completo originariamente previsto.
+
+Grouped FOLD copre 92 siti su 100: gli altri otto non dispongono di tracce held-out con almeno quattro risoluzioni complete. La copertura è inoltre non uniforme tra le repetition.
+
+I CI delle attribuzioni descrivono l'incertezza dell'aggregazione sui modelli osservati, non la variabilità di nuovi retraining indipendenti.
+
 \section{Conclusioni}
-La pipeline implementata permette di spiegare sia la Random Forest, attraverso le sue feature, sia l'output finale di FOLD, attraverso gruppi di risoluzioni e un predictor end-to-end. Nella baseline i quattro gruppi non contribuiscono allo stesso modo sul cohort Instagram: G1 presenta il contributo medio assoluto maggiore, seguito da G2.
+Ho implementato una pipeline riproducibile per spiegare sia la Random Forest attraverso le sue feature sia FOLD attraverso gruppi di risoluzioni. Il predictor end-to-end ricostruisce dalla stessa traccia perturbata le rappresentazioni e le probabilità RF, mantenendo coerenti tutti gli input della decisione finale. Lo studio dettagliato iniziale su Instagram ha permesso di validare il metodo e analizzare baseline, defense e open-world, distinguendo output multiclass e binary.
 
-Le defense modificano performance e attribuzioni in modi diversi. Padding e combined producono le variazioni più evidenti nei risultati osservati, mentre dummy ha un impatto minore sulle performance nelle configurazioni testate. Fragmentation presenta una degradazione più moderata rispetto a padding e combined.
+Ho poi esteso lo studio a cinque training run per ciascuna delle 26 configurazioni, con target dinamico pari al sito reale. Nella baseline multi-sito G1 presenta la maggiore magnitudine globale ed è dominante in 84 dei 92 siti eleggibili: l'osservazione iniziale su Instagram trova quindi riscontro in un insieme più ampio. Dominant-group analysis e heatmap mostrano quanto il comportamento sia diffuso e quale eterogeneità rimanga tra siti.
 
-Nello scenario open-world FOLD mantiene buone performance nei cinque rapporti analizzati. Le spiegazioni binary mostrano contributi medi con direzione opposta nei due cohort: positivi per monitored e negativi per background. L'analisi permette così di distinguere i contributi alla probabilità di un sito da quelli alla decisione monitored/background.
+Le defense modificano diversamente attribuzioni e performance; il delta paired misura direttamente la variazione di magnitudine rispetto alla baseline nello stesso disegno sperimentale. Il recupero combined a intensità 1.00 è osservato anche nella media cross-run. Nell'open-world è necessario distinguere la probabilità del sito reale dalla detection monitored/background; il confronto con il primo cohort mostra inoltre che le gerarchie dei gruppi possono cambiare nell'aggregazione multi-sito.
+
+I CI quantificano l'incertezza delle stime entro i limiti dei due bootstrap. Il protocollo FAST rende praticabile la explainability senza abbreviare il training né cambiare i modelli. La copertura grouped di 92/100 siti è dichiarata esplicitamente e gli otto siti unavailable non sono imputati: il significato strutturale di G1--G4 resta invariato. Le due fasi forniscono evidenza complementare sul comportamento dei modelli rispetto alle reference e non un'interpretazione causale del traffico.
 
 \clearpage
 \appendix
@@ -463,5 +790,230 @@ Background & Cohort & G1 & G2 & G3 & G4 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+
+
+\clearpage
+\subsection{Tabelle cross-run}
+Le tabelle seguenti riportano le medie cross-run, arrotondate a quattro decimali. Le performance includono i CI al 95\% sui cinque valori run-level. Le tabelle sintetiche XAI riportano le medie dei cohort primari; tutti i relativi CI, le statistiche Instagram e i delta paired sono disponibili in \texttt{global\_summary.csv}. Le magnitudini sono in unità di probabilità e non sono quote normalizzate.
+
+\begin{table}[htbp]
+\centering\scriptsize
+\caption{Baseline e defense RF: media e CI al 95\% su cinque training run per configurazione, sui test completi.}
+\label{tab:crossrun-defense-performance-rf}
+\begin{tabular}{llll}
+\toprule
+Defense & Intensità & Accuracy [CI 95\%] & Macro-F1 [CI 95\%] \\
+\midrule
+Baseline & 0.00 & 0.9831 [0.9791, 0.9865] & 0.9826 [0.9794, 0.9860] \\
+Padding & 0.10 & 0.9794 [0.9766, 0.9828] & 0.9782 [0.9752, 0.9817] \\
+Padding & 0.30 & 0.9529 [0.9520, 0.9540] & 0.9490 [0.9470, 0.9509] \\
+Padding & 0.50 & 0.9024 [0.8922, 0.9142] & 0.8950 [0.8845, 0.9075] \\
+Padding & 0.70 & 0.7628 [0.7413, 0.7850] & 0.7487 [0.7265, 0.7721] \\
+Padding & 1.00 & 0.4982 [0.4810, 0.5154] & 0.4709 [0.4559, 0.4847] \\
+Dummy & 0.10 & 0.9817 [0.9788, 0.9836] & 0.9794 [0.9762, 0.9825] \\
+Dummy & 0.30 & 0.9786 [0.9757, 0.9814] & 0.9761 [0.9722, 0.9795] \\
+Dummy & 0.50 & 0.9774 [0.9740, 0.9808] & 0.9752 [0.9702, 0.9802] \\
+Dummy & 0.70 & 0.9738 [0.9701, 0.9769] & 0.9702 [0.9661, 0.9741] \\
+Dummy & 1.00 & 0.9707 [0.9647, 0.9763] & 0.9666 [0.9595, 0.9734] \\
+Fragmentation & 0.10 & 0.9777 [0.9729, 0.9814] & 0.9759 [0.9715, 0.9794] \\
+Fragmentation & 0.30 & 0.9622 [0.9574, 0.9667] & 0.9562 [0.9517, 0.9610] \\
+Fragmentation & 0.50 & 0.9410 [0.9300, 0.9489] & 0.9344 [0.9245, 0.9422] \\
+Fragmentation & 0.70 & 0.9295 [0.9250, 0.9340] & 0.9222 [0.9166, 0.9279] \\
+Fragmentation & 1.00 & 0.9298 [0.9219, 0.9368] & 0.9225 [0.9153, 0.9300] \\
+Combined & 0.10 & 0.9622 [0.9551, 0.9701] & 0.9577 [0.9492, 0.9670] \\
+Combined & 0.30 & 0.8449 [0.8395, 0.8505] & 0.8327 [0.8259, 0.8385] \\
+Combined & 0.50 & 0.6423 [0.6299, 0.6578] & 0.6252 [0.6087, 0.6415] \\
+Combined & 0.70 & 0.4911 [0.4858, 0.4965] & 0.4591 [0.4500, 0.4692] \\
+Combined & 1.00 & 0.6618 [0.6477, 0.6762] & 0.6355 [0.6238, 0.6470] \\
+\bottomrule
+\end{tabular}
+\end{table}
+\clearpage
+\begin{table}[htbp]
+\centering\scriptsize
+\caption{Baseline e defense FOLD: media e CI al 95\% su cinque training run per configurazione, sui test completi.}
+\label{tab:crossrun-defense-performance-fold}
+\begin{tabular}{llll}
+\toprule
+Defense & Intensità & Accuracy [CI 95\%] & Macro-F1 [CI 95\%] \\
+\midrule
+Baseline & 0.00 & 0.9867 [0.9831, 0.9898] & 0.9860 [0.9835, 0.9885] \\
+Padding & 0.10 & 0.9811 [0.9797, 0.9828] & 0.9802 [0.9795, 0.9809] \\
+Padding & 0.30 & 0.9614 [0.9574, 0.9661] & 0.9573 [0.9527, 0.9629] \\
+Padding & 0.50 & 0.9157 [0.9066, 0.9247] & 0.9097 [0.9025, 0.9169] \\
+Padding & 0.70 & 0.8023 [0.7718, 0.8307] & 0.7925 [0.7649, 0.8202] \\
+Padding & 1.00 & 0.5927 [0.5814, 0.6076] & 0.5746 [0.5652, 0.5892] \\
+Dummy & 0.10 & 0.9859 [0.9831, 0.9887] & 0.9841 [0.9809, 0.9872] \\
+Dummy & 0.30 & 0.9856 [0.9834, 0.9879] & 0.9837 [0.9810, 0.9864] \\
+Dummy & 0.50 & 0.9831 [0.9797, 0.9862] & 0.9813 [0.9776, 0.9849] \\
+Dummy & 0.70 & 0.9865 [0.9831, 0.9896] & 0.9853 [0.9819, 0.9882] \\
+Dummy & 1.00 & 0.9808 [0.9760, 0.9856] & 0.9787 [0.9740, 0.9841] \\
+Fragmentation & 0.10 & 0.9819 [0.9788, 0.9850] & 0.9808 [0.9780, 0.9843] \\
+Fragmentation & 0.30 & 0.9695 [0.9667, 0.9729] & 0.9652 [0.9629, 0.9673] \\
+Fragmentation & 0.50 & 0.9506 [0.9453, 0.9551] & 0.9452 [0.9399, 0.9506] \\
+Fragmentation & 0.70 & 0.9379 [0.9289, 0.9470] & 0.9328 [0.9250, 0.9404] \\
+Fragmentation & 1.00 & 0.9439 [0.9402, 0.9472] & 0.9382 [0.9361, 0.9404] \\
+Combined & 0.10 & 0.9659 [0.9583, 0.9735] & 0.9633 [0.9562, 0.9700] \\
+Combined & 0.30 & 0.8604 [0.8474, 0.8748] & 0.8517 [0.8415, 0.8658] \\
+Combined & 0.50 & 0.6717 [0.6561, 0.6835] & 0.6602 [0.6385, 0.6759] \\
+Combined & 0.70 & 0.5441 [0.5168, 0.5715] & 0.5214 [0.4882, 0.5509] \\
+Combined & 1.00 & 0.7365 [0.7278, 0.7467] & 0.7234 [0.7083, 0.7349] \\
+\bottomrule
+\end{tabular}
+\end{table}
+\clearpage
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{FOLD multiclass baseline e defense: probabilità del sito reale e mean $|\phi_g|$ sui 92 siti eleggibili, con peso uguale ai siti. I CI sono in \texttt{global\_summary.csv}.}
+\label{tab:crossrun-defense-xai}
+\begin{tabular}{lrrrrrr}
+\toprule
+Defense & Intensità & $\overline P_{\mathrm{sito\ reale}}$ & G1 & G2 & G3 & G4 \\
+\midrule
+Baseline & 0.00 & 0.8330 & 0.3379 & 0.1793 & 0.1520 & 0.1550 \\
+Padding & 0.10 & 0.8465 & 0.3212 & 0.1813 & 0.1704 & 0.1658 \\
+Padding & 0.30 & 0.8295 & 0.2622 & 0.1902 & 0.1886 & 0.1814 \\
+Padding & 0.50 & 0.7731 & 0.2196 & 0.1767 & 0.1831 & 0.1881 \\
+Padding & 0.70 & 0.7161 & 0.2051 & 0.1622 & 0.1758 & 0.1692 \\
+Padding & 1.00 & 0.4906 & 0.1446 & 0.1131 & 0.1219 & 0.1129 \\
+Dummy & 0.10 & 0.8415 & 0.3226 & 0.1797 & 0.1697 & 0.1612 \\
+Dummy & 0.30 & 0.8372 & 0.3272 & 0.1828 & 0.1597 & 0.1598 \\
+Dummy & 0.50 & 0.8267 & 0.3142 & 0.1843 & 0.1584 & 0.1613 \\
+Dummy & 0.70 & 0.8338 & 0.3139 & 0.1917 & 0.1618 & 0.1585 \\
+Dummy & 1.00 & 0.8401 & 0.3054 & 0.1844 & 0.1704 & 0.1720 \\
+Fragmentation & 0.10 & 0.8318 & 0.3046 & 0.1749 & 0.1707 & 0.1723 \\
+Fragmentation & 0.30 & 0.7995 & 0.2838 & 0.1670 & 0.1734 & 0.1673 \\
+Fragmentation & 0.50 & 0.8160 & 0.2643 & 0.1797 & 0.1802 & 0.1827 \\
+Fragmentation & 0.70 & 0.7962 & 0.2698 & 0.1702 & 0.1753 & 0.1729 \\
+Fragmentation & 1.00 & 0.7953 & 0.3117 & 0.1605 & 0.1573 & 0.1577 \\
+Combined & 0.10 & 0.8189 & 0.2614 & 0.1905 & 0.1789 & 0.1804 \\
+Combined & 0.30 & 0.7389 & 0.2126 & 0.1591 & 0.1830 & 0.1782 \\
+Combined & 0.50 & 0.5889 & 0.1757 & 0.1352 & 0.1409 & 0.1384 \\
+Combined & 0.70 & 0.4336 & 0.1318 & 0.0985 & 0.1061 & 0.1008 \\
+Combined & 1.00 & 0.6248 & 0.2071 & 0.1407 & 0.1427 & 0.1292 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\clearpage
+\begin{table}[htbp]
+\centering\scriptsize
+\caption{Open-world RF e FOLD: media e CI al 95\% dei cinque valori run-level per rapporto.}
+\label{tab:crossrun-open-performance-complete}
+\begin{tabular}{llll}
+\toprule
+Background & Modello & Accuracy [CI 95\%] & Macro-F1 [CI 95\%] \\
+\midrule
+0.30 & RF & 0.9686 [0.9649, 0.9724] & 0.9721 [0.9694, 0.9747] \\
+0.30 & FOLD & 0.9704 [0.9670, 0.9737] & 0.9708 [0.9682, 0.9742] \\
+0.40 & RF & 0.9707 [0.9687, 0.9728] & 0.9705 [0.9691, 0.9723] \\
+0.40 & FOLD & 0.9758 [0.9719, 0.9797] & 0.9724 [0.9677, 0.9771] \\
+0.50 & RF & 0.9722 [0.9694, 0.9749] & 0.9671 [0.9653, 0.9688] \\
+0.50 & FOLD & 0.9787 [0.9764, 0.9810] & 0.9703 [0.9666, 0.9739] \\
+0.60 & RF & 0.9730 [0.9700, 0.9757] & 0.9629 [0.9580, 0.9662] \\
+0.60 & FOLD & 0.9834 [0.9806, 0.9862] & 0.9721 [0.9674, 0.9766] \\
+0.70 & RF & 0.9776 [0.9761, 0.9794] & 0.9599 [0.9572, 0.9637] \\
+0.70 & FOLD & 0.9850 [0.9833, 0.9866] & 0.9660 [0.9618, 0.9696] \\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{table}[htbp]
+\centering\scriptsize
+\caption{Detection RF: media e CI al 95\% sui cinque run. TPR e FPR usano soglia $>0.5$; AUC considera tutte le soglie.}
+\label{tab:crossrun-open-detection-rf}
+\begin{tabular}{llll}
+\toprule
+Background & TPR [CI 95\%] & FPR [CI 95\%] & AUC [CI 95\%] \\
+\midrule
+0.30 & 0.9642 [0.9577, 0.9707] & 0.0125 [0.0099, 0.0164] & 0.9929 [0.9917, 0.9939] \\
+0.40 & 0.9642 [0.9577, 0.9707] & 0.0140 [0.0097, 0.0182] & 0.9926 [0.9916, 0.9936] \\
+0.50 & 0.9642 [0.9577, 0.9707] & 0.0161 [0.0138, 0.0183] & 0.9924 [0.9911, 0.9936] \\
+0.60 & 0.9642 [0.9577, 0.9707] & 0.0186 [0.0166, 0.0207] & 0.9925 [0.9911, 0.9936] \\
+0.70 & 0.9642 [0.9577, 0.9707] & 0.0151 [0.0119, 0.0193] & 0.9925 [0.9913, 0.9934] \\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{table}[htbp]
+\centering\scriptsize
+\caption{Detection FOLD: media e CI al 95\% sui cinque run. TPR e FPR usano soglia $>0.5$; AUC considera tutte le soglie.}
+\label{tab:crossrun-open-detection-fold}
+\begin{tabular}{llll}
+\toprule
+Background & TPR [CI 95\%] & FPR [CI 95\%] & AUC [CI 95\%] \\
+\midrule
+0.30 & 0.9893 [0.9834, 0.9955] & 0.0447 [0.0342, 0.0533] & 0.9968 [0.9952, 0.9985] \\
+0.40 & 0.9898 [0.9865, 0.9932] & 0.0258 [0.0190, 0.0355] & 0.9977 [0.9964, 0.9989] \\
+0.50 & 0.9867 [0.9822, 0.9913] & 0.0152 [0.0116, 0.0189] & 0.9979 [0.9971, 0.9987] \\
+0.60 & 0.9845 [0.9797, 0.9887] & 0.0098 [0.0071, 0.0124] & 0.9982 [0.9972, 0.9988] \\
+0.70 & 0.9867 [0.9825, 0.9910] & 0.0096 [0.0079, 0.0112] & 0.9981 [0.9970, 0.9991] \\
+\bottomrule
+\end{tabular}
+\end{table}
+\clearpage
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{Open-world FOLD multiclass: probabilità del sito reale e mean $|\phi_g|$ sui 92 siti eleggibili; CI disponibili nei CSV.}
+\label{tab:crossrun-open-multi-xai}
+\begin{tabular}{rrrrrr}
+\toprule
+Background & $\overline P_{\mathrm{sito\ reale}}$ & G1 & G2 & G3 & G4 \\
+\midrule
+0.30 & 0.8000 & 0.2856 & 0.1789 & 0.1559 & 0.1711 \\
+0.40 & 0.7925 & 0.2962 & 0.1839 & 0.1458 & 0.1585 \\
+0.50 & 0.7805 & 0.2796 & 0.1749 & 0.1523 & 0.1665 \\
+0.60 & 0.7578 & 0.2903 & 0.1641 & 0.1418 & 0.1542 \\
+0.70 & 0.7554 & 0.2829 & 0.1714 & 0.1414 & 0.1526 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{Binary FOLD: probabilità media monitored e magnitudini G1--G4. Monitored: 92 siti, 266 tracce distinte; background: 266 osservazioni per rapporto, 263--265 tracce distinte. CI disponibili nei CSV.}
+\label{tab:crossrun-open-binary-abs}
+\begin{tabular}{rlrrrrr}
+\toprule
+Background & Cohort & $\overline P_M$ & G1 & G2 & G3 & G4 \\
+\midrule
+0.30 & Monitored & 0.9968 & 0.2845 & 0.1162 & 0.0680 & 0.0626 \\
+0.30 & Background & 0.0332 & 0.2428 & 0.1109 & 0.0795 & 0.0768 \\
+0.40 & Monitored & 0.9993 & 0.2779 & 0.1339 & 0.0674 & 0.0652 \\
+0.40 & Background & 0.0304 & 0.2504 & 0.1172 & 0.0740 & 0.0737 \\
+0.50 & Monitored & 0.9823 & 0.3061 & 0.1087 & 0.0627 & 0.0614 \\
+0.50 & Background & 0.0067 & 0.2897 & 0.0974 & 0.0626 & 0.0624 \\
+0.60 & Monitored & 0.9931 & 0.2986 & 0.1122 & 0.0651 & 0.0640 \\
+0.60 & Background & 0.0165 & 0.2797 & 0.0902 & 0.0704 & 0.0685 \\
+0.70 & Monitored & 0.9962 & 0.2746 & 0.1353 & 0.0710 & 0.0588 \\
+0.70 & Background & 0.0068 & 0.3187 & 0.0870 & 0.0521 & 0.0508 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{table}[htbp]
+\centering\footnotesize
+\caption{Binary FOLD: contributi medi con segno a $P(\mathrm{monitored})$. Le medie sono positive per monitored e negative per background; i singoli contributi possono avere segni diversi. CI disponibili nei CSV.}
+\label{tab:crossrun-open-binary-signed}
+\begin{tabular}{rlrrrr}
+\toprule
+Background & Cohort & G1 & G2 & G3 & G4 \\
+\midrule
+0.30 & Monitored & 0.2775 & 0.0994 & 0.0623 & 0.0576 \\
+0.30 & Background & -0.2299 & -0.0974 & -0.0680 & -0.0716 \\
+0.40 & Monitored & 0.2710 & 0.1137 & 0.0599 & 0.0548 \\
+0.40 & Background & -0.2388 & -0.1015 & -0.0674 & -0.0618 \\
+0.50 & Monitored & 0.3017 & 0.0858 & 0.0492 & 0.0456 \\
+0.50 & Background & -0.2832 & -0.0946 & -0.0578 & -0.0576 \\
+0.60 & Monitored & 0.2895 & 0.0916 & 0.0567 & 0.0553 \\
+0.60 & Background & -0.2743 & -0.0832 & -0.0648 & -0.0611 \\
+0.70 & Monitored & 0.2675 & 0.1099 & 0.0662 & 0.0527 \\
+0.70 & Background & -0.3169 & -0.0850 & -0.0470 & -0.0443 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Risultati supplementari nel repository}
+I risultati numerici finali sono in \path{analysis/cross_run/summary_fast/}. \texttt{global\_summary.csv} contiene medie e CI delle attribuzioni, probabilità e delta; \texttt{site\_summary.csv} conserva le statistiche site/run. \texttt{coverage.csv} documenta osservazioni, tracce distinte e run disponibili. \texttt{dominant\_summary.csv}, \texttt{dominant\_sites.csv} e \texttt{heatmap.csv} descrivono i risultati per sito; \texttt{delta\_raw\_long.csv} e \texttt{pairing.csv} conservano differenze paired e verifica del matching. \texttt{performance\_raw.csv} e \texttt{performance\_summary.csv} distinguono valori run-level e loro medie con CI.
+
+Le 85 figure complete sono in \path{analysis/cross_run/figures_fast/}, organizzate in \texttt{baseline/}, \texttt{defenses/padding/}, \texttt{defenses/dummy/}, \texttt{defenses/fragmentation/}, \texttt{defenses/combined/}, \texttt{openworld/}, \texttt{performance/fold/} e \texttt{performance/forest/}. Per ogni configurazione multiclass sono disponibili heatmap e dominant-group chart; i grafici delle famiglie riportano magnitudini, delta e probabilità, e quelli binary distinguono magnitudine e segno. Il corpo del report seleziona le figure necessarie al confronto; le restanti analisi costituiscono il materiale supplementare.
+
+
 
 \end{document}
