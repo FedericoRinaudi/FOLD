@@ -13,8 +13,7 @@ This repository contains the attack, the baselines it is compared with, the scri
 | `run_campaign.sh` | runs all the experiments of the paper |
 | `make_background.py` | builds the synthetic background traffic for the open-world experiments |
 | `make_figures.py` | generates the figures and tables of the paper |
-| `data/odoh_traces.csv` | the dataset: 54,155 ODoH queries from 2,834 page loads |
-| `data/target_websites.csv` | the 100 monitored websites |
+| `data/odoh_traces.csv` | the dataset: 54,155 ODoH queries from 2,834 page loads of 100 websites |
 
 The dataset is also available on Zenodo, together with the raw captures: <https://doi.org/10.5281/zenodo.15115716>.
 
