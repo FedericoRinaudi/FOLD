@@ -1,179 +1,90 @@
-# FOLD — website fingerprinting on Oblivious DNS over HTTPS
+# FOLD
 
-Code and data for *Characterizing Privacy Risks in Oblivious DNS over HTTPS via
-Website Fingerprinting*.
+FOLD is a website fingerprinting attack on Oblivious DNS over HTTPS (ODoH). It classifies each page load in two ways, with a Transformer over the sequence of packets and a random forest over statistics of the trace that do not depend on packet order, and combines the two to identify the visited website.
 
-FOLD is a website-fingerprinting attack on ODoH traffic. It reads a page load
-in two ways at once — a Transformer over the sequence of packets, and a random
-forest over summaries of that same trace that ignore the order — and combines
-them to name the website the client visited.
+This repository contains the attack, the baselines it is compared with, the scripts that run the experiments and generate the figures and tables of the paper *Characterizing Privacy Risks in Oblivious DNS over HTTPS via Website Fingerprinting*, and the ODoH traffic dataset used for the evaluation.
 
-This repository holds the attack, the baselines it is compared against, the
-campaign that trains them all, and the figures and tables of the paper.
+## Repository structure
 
-## What is here
-
-| | |
+| Path | Content |
 |---|---|
 | `fold/` | the attack, the baselines and the data pipeline |
-| `run_experiment.py` | run one model of one experiment |
-| `run_campaign.sh` | run the whole campaign |
-| `make_background.py` | build the synthetic background pool |
-| `make_figures.py` | the figures and tables of the paper |
-| `data/odoh_traces.csv` | the dataset: 54 155 ODoH queries over 2834 page loads |
+| `run_experiment.py` | runs one model of one experiment |
+| `run_campaign.sh` | runs all the experiments of the paper |
+| `make_background.py` | builds the synthetic background traffic for the open-world experiments |
+| `make_figures.py` | generates the figures and tables of the paper |
+| `data/odoh_traces.csv` | the dataset: 54,155 ODoH queries from 2,834 page loads |
 | `data/target_websites.csv` | the 100 monitored websites |
 
-The dataset is also published on its own, with the raw captures, at
-<https://doi.org/10.5281/zenodo.15115716>.
+The dataset is also available on Zenodo, together with the raw captures: <https://doi.org/10.5281/zenodo.15115716>.
 
 ## Getting started
+
+FOLD requires Python 3.12.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 
-python make_background.py            # once: the open-world background pool
-bash run_campaign.sh                 # the campaign
-python make_figures.py               # the figures and tables
+python make_background.py     # once, builds the background traffic
+bash run_campaign.sh          # runs the experiments
+python make_figures.py        # generates figures and tables
 ```
 
-A GPU is not required but the campaign is long without one. `run_campaign.sh
---list` prints the 470 jobs without running any of them, and `SHARD=i/N` runs
-one machine's share, so the campaign spreads over as many machines as are
-available and the results merge by copying the directories together.
+To try a single repetition first, run `REPS=1 bash run_campaign.sh`.
 
-To try a single experiment first:
+## Experiments
 
-```bash
-REPS=1 bash run_campaign.sh
-```
+The full campaign is made of 10 repetitions of 47 jobs, 470 in total. Each job trains the models it needs, one at a time so that each training releases the GPU memory before the next one starts, then evaluates them. Every job writes to its own directory, so the jobs can run on different machines: `run_campaign.sh --list` prints all of them, and `SHARD=i/N bash run_campaign.sh` runs the i-th of N shares. The results are merged by copying the directories together.
 
-## The campaign
-
-A job is one cell of the campaign for one repetition. Each job trains the models
-it needs, one process at a time so that a training releases its GPU memory
-before the next begins, and then evaluates them. Every job writes to its own
-directory, keyed by the repetition, so any subset can run anywhere.
-
-| directory | jobs per repetition | what it measures | in the paper |
+| Directory | Jobs per repetition | Measures | In the paper |
 |---|---|---|---|
 | `defense_<mechanism>_p<p>` | 20 | padding, dummy injection, fragmentation and all three together, each at five probabilities, against an adversary that retrains on defended traffic | Figs. 9, 10 |
-| `openworld_r<ratio>` | 5 | five proportions of traffic from outside the monitored set | Figs. 4, 5, 6 |
-| `heads_two_r<ratio>`, `heads_n1_r<ratio>` | 10 | the two heads against a single softmax over N+1 classes | Fig. 8 |
-| `static_sweep` | 1 | trained once on clean traffic, evaluated under every defense; its undefended cell is the closed-world reference | Table IV |
-| `deep_fingerprinting` | 1 | Deep Fingerprinting, closed world | Section VI-A |
-| `location` | 10 | leave one client location out, and a random split for reference | Table V |
+| `openworld_r<ratio>` | 5 | five proportions of traffic from websites outside the monitored set | Figs. 4, 5, 6 |
+| `heads_two_r<ratio>`, `heads_n1_r<ratio>` | 10 | FOLD's two output heads against a single softmax over N+1 classes | Fig. 8 |
+| `static_sweep` | 1 | a model trained on undefended traffic and evaluated under every defense | Table IV |
+| `deep_fingerprinting` | 1 | Deep Fingerprinting in the closed world | Section VI-A |
+| `location` | 10 | training without one client location, and a random split for reference | Table V |
 
-Ten repetitions of 47 jobs come to 470. Each repetition reshuffles both the
-monitored traces and the background pool with its own seed and carves disjoint
-train/validation/test slices, so the error bars across repetitions also reflect
-background sampling. Results are reported as the mean with a 95% Student-t
-interval over the ten repetitions.
+Each repetition uses its own seed to shuffle the traces and the background traffic and to split them into training, validation and test sets. The seed also fixes the model initialization and the random choices of the defense, so every repetition is reproducible and all models in it see the same defended traces. Results are reported as the mean over the 10 repetitions with a 95% Student-t interval.
 
-Every repetition seeds Python, NumPy and TensorFlow from its own identifier.
-Splits, model initialisation and the stochastic defense are therefore
-reproducible, and within one repetition every model sees exactly the same
-defended traces.
+Each job saves the predictions of every model on every trace (`forest.npz`, `transformer.npz`, `fold.npz`, `cnn.npz`), the test labels and a `result.json` with the metrics, so any metric can be recomputed without training again. The fields of the prediction files are defined in `fold/predictions.py`.
 
-### What a job leaves behind
-
-```
-results/openworld_r0.50/exp_001/
-    forest.npz       what the forest predicted, on every split
-    transformer.npz  what TR predicted
-    fold.npz         what FOLD predicted
-    cnn.npz          what the convolutional baseline predicted
-    background.pkl   the background traces this repetition drew
-    y_test.npy       the test labels
-    result.json      the metrics
-```
-
-Predictions are kept per trace, not only as summary metrics, so any metric can
-be recomputed afterwards without retraining. Each `.npz` holds the fields of
-`fold/predictions.py` — website probabilities and, for the models that have a
-head for it, the "this trace is monitored" score — and `make_figures.py` reads
-exactly these files.
-
-## Running one experiment by hand
+### Running one experiment
 
 ```bash
-# closed world, undefended
 python run_experiment.py --model forest      --experiment-id 1 --out-dir results/cw
 python run_experiment.py --model transformer --experiment-id 1 --out-dir results/cw
 python run_experiment.py --model fold        --experiment-id 1 --out-dir results/cw
 python run_experiment.py --model evaluate    --experiment-id 1 --out-dir results/cw
 ```
 
-`forest` runs first: FOLD is trained on the forest's out-of-fold probabilities,
-and in the open world the forest is also what draws the background traces every
-other model reuses.
+The forest must run first, because FOLD is trained on its out-of-fold probabilities and, in the open world, the forest also selects the background traces used by the other models. `--defense-padding`, `--defense-dummy` and `--defense-fragmentation` set the per-packet probability of each countermeasure, `--open-world` with `--background-ratio` adds background traffic, and `--n1-head` replaces FOLD's two heads with a single softmax over N+1 classes. `--help` lists all the options.
 
-`--defense-padding`, `--defense-dummy` and `--defense-fragmentation` set the
-per-packet probability of each countermeasure; `--open-world` with
-`--background-ratio` mixes in background traffic; `--n1-head` replaces FOLD's
-two heads with a single softmax over N+1 classes. `--help` lists the rest.
+## Models
 
-## The figures
-
-```bash
-python make_figures.py                # all of them
-python make_figures.py fig4 table5    # a few
-```
-
-Output goes to `figures/`, one file per panel plus the legend as a file of its
-own, at the exact width of its slot in the LaTeX source so that nothing is
-rescaled on inclusion.
-
-| | |
+| Model | Description |
 |---|---|
-| `fig4_open_world/` | FOLD against its two branches, as the background grows |
-| `fig5_open_world_cnn/` | FOLD against the convolutional baseline |
-| `fig6_detection_roc/` | ROC of the monitored/background decision |
-| `fig7_signal/` | which traffic properties carry the signal, and how many queries a site makes |
-| `fig8_heads/` | two heads against a single softmax over N+1 classes |
-| `fig9_defense_branches/` | under each countermeasure: FOLD against its branches |
-| `fig10_defense_cnn/` | under each countermeasure: FOLD against the baseline |
-| `table4_closed_world.tex` | closed-world performance on undefended traffic |
-| `table5_location.tex` | location generalization |
-
-Set `WF_RESULTS` to read a campaign from somewhere other than `results/`, and
-`WF_FIGURES` to write the figures somewhere other than `figures/`.
-
-## The models
-
-| | |
-|---|---|
-| `fold` | the attack: the Transformer encoder fused with the forest, two heads |
+| `fold` | the attack: a Transformer encoder combined with the random forest, with two output heads |
 | `transformer` | the sequential branch alone |
 | `forest` | the order-independent branch alone |
-| `cnn` | the convolutional baseline, from the conference version of this work |
+| `cnn` | the convolutional baseline from the conference version of this work |
 | `df` | Deep Fingerprinting (Sirinam et al., CCS 2018), adapted to ODoH |
 
-Deep Fingerprinting keeps its published architecture and optimiser. Two
-deviations are deliberate and both follow from trace length — an ODoH page load
-is tens to a few hundred packets against the 5000 Tor cells it was designed for:
-pooling is reduced from window 8 / stride 4 to 2 / 2, and the classifier head
-averages over positions instead of flattening them. `fold/models/df.py` explains
-why.
+Deep Fingerprinting keeps its published architecture and optimizer, with two changes due to trace length: an ODoH page load has from tens to a few hundred packets, against the 5,000 Tor cells the model was designed for. Pooling uses window 2 and stride 2 instead of 8 and 4, and the classifier averages over positions instead of flattening them. `fold/models/df.py` explains both.
 
-## The background traffic
+## Background traffic
 
-The open-world experiments need traffic from outside the monitored set. It is
-synthetic: a Gaussian copula is fit on the statistics of the real traces and
-sampled to invent new sites. Only real traces are used to fit the generator; no
-real trace ever enters the pool or is labelled background. Statistically close
-background is the harder case for the attack, so this is the worst case for the
-adversary rather than a convenient one.
+The open-world experiments need traffic from websites outside the monitored set. This traffic is synthetic: a Gaussian copula is fitted on the statistics of the real traces and sampled to generate new websites. Real traces are used only to fit the generator and never appear in the background pool. Background traffic that is statistically close to the real one is the hardest case for the attack.
 
-`make_background.py` writes the pool once, with its parameters recorded in the
-header of the CSV it produces. The defaults are the ones behind the published
-results and the seeds are pinned, so the pool is deterministic given the same
-SDV version.
+`make_background.py` builds the pool once and records its parameters in the header of the CSV file. The default parameters and seeds are the ones used for the results in the paper, so the pool is the same as long as the SDV version is the same.
 
 ## Citing
 
-If you use this code or the dataset, please cite:
+The paper describing FOLD is currently under review. Until it is published, please cite the conference version:
 
-Federico Rinaudi, Abhinav Kumar, Mohammad Amir Salari, Reza Tourani, Alessio
-Sacco, Guido Marchetto and Flavio Esposito, *Characterizing Privacy Risks in
-Oblivious DNS over HTTPS via Website Fingerprinting*.
+M. A. Salari, A. Kumar, F. Rinaudi, R. Tourani, A. Sacco and F. Esposito, *Privacy Analysis of Oblivious DNS over HTTPS: a Website Fingerprinting Study*, IEEE/IFIP DSN 2025.
+
+## License
+
+The code is released under the MIT License, see [LICENSE](LICENSE). The dataset in `data/` is released under CC BY 4.0, as on Zenodo.
