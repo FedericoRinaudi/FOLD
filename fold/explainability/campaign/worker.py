@@ -62,11 +62,11 @@ def background_splits(pool_ids, monitored_split, run):
     return result
 
 
-def binary_files(dataset, pool, metadata, monitored_selection, out):
+def binary_files(dataset, pool, metadata, monitored_selection, out, *, references_per_population=8):
     """Common background test/reference IDs across ratios when feasible.
 
     train/test boundaries move with ratio; intersections are explicitly used.
-    Reference semantics stay 8 monitored + 8 background training traces.
+    The number of monitored/background training references is configurable; default is 8+8.
     """
     from fold.data import load_traces
     from ..open_world.data import load_background_pool
@@ -102,12 +102,12 @@ def binary_files(dataset, pool, metadata, monitored_selection, out):
     common_train = set.intersection(*(set(s["train"]) for s in splits.values()))
     mtrain = [tid for tid in metadata["split_ids"]["train"] if len(resolution_edges(monitored[tid]))-1 >= 4]
     btrain = sorted(tid for tid in common_train if len(resolution_edges(background[tid]))-1 >= 4)
-    if len(mtrain) < 8 or len(btrain) < 8:
-        raise ValueError("Insufficient eligible common binary training references (8 per population)")
+    if len(mtrain) < references_per_population or len(btrain) < references_per_population:
+        raise ValueError(f"Insufficient eligible common binary training references ({references_per_population} per population)")
     # Match the existing independent-population samplers with the same seed;
     # reference draws must not depend on a ratio's background sample count.
-    refs = {"output": "binary_output", "monitored_reference_ids": np.random.default_rng(0).choice(mtrain, 8, replace=False).tolist(),
-            "background_reference_ids": np.random.default_rng(0).choice(btrain, 8, replace=False).tolist()}
+    refs = {"output": "binary_output", "monitored_reference_ids": np.random.default_rng(0).choice(mtrain, references_per_population, replace=False).tolist(),
+            "background_reference_ids": np.random.default_rng(0).choice(btrain, references_per_population, replace=False).tolist()}
     persist_selection(out / "binary_references.json", refs)
     return {"background_samples_common_across_ratios": bool(common_test),
             "background_common_test_count": len(common_test), "references_common_across_ratios": True}
@@ -217,11 +217,15 @@ def run(args):
         bundle.model,
     )
 
+    # Reference budget is part of the selection protocol. Missing fields preserve the original protocol.
+    fold_reference_size = int(selection.get("fold_reference_size", 16))
+    binary_refs_per_population = int(selection.get("binary_references_per_population", 8))
+
     # FOLD uses only the fixed G1-G4 eligible cohort.
     refs, fold_samples, ref_ids, fold_sample_ids, info = select_traces(
         args.dataset,
         metadata,
-        background_size=16,
+        background_size=fold_reference_size,
         sample_ids_file=fold_assigned_file,
         reference_num_groups=4,
         seed=0,
@@ -367,9 +371,17 @@ def run(args):
             from ..open_world.predictor import BinaryFoldPredictor
             from ..open_world.explainer import BinaryGroupExplainer
 
-            policy = binary_files(args.dataset, args.background_pool, fold_metadata, fold_selection, pending)
+            policy = binary_files(
+                args.dataset,
+                args.background_pool,
+                fold_metadata,
+                fold_selection,
+                pending,
+                references_per_population=binary_refs_per_population,
+            )
             binary_selection = select_open_world(args.dataset, args.background_pool, fold_metadata,
                                                  sample_ids_file=pending / "binary_samples.json", num_groups=4,
+                                                 reference_size=2 * binary_refs_per_population,
                                                  reference_ids_file=pending / "binary_references.json")
             if binary_selection.metadata["selection"]["effective_num_groups"] != 4:
                 raise ValueError("Binary all-sites requires exactly four nonempty resolution groups")

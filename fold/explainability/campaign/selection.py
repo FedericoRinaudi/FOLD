@@ -88,7 +88,9 @@ def prepare_selection(splits, names, *, seed=0, size=15):
     return selection
 
 
-def validate_selection(selection, splits, names, *, size=15):
+def validate_selection(selection, splits, names, *, size=None):
+    if size is None:
+        size = int(selection.get("observations_per_site", 15))
     if selection.get("protocol") != PROTOCOL or selection.get("observations_per_site") != size:
         raise ValueError("Unsupported cross-run selection protocol/quota")
     records = selection["records"]
